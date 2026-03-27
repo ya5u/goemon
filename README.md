@@ -1,15 +1,25 @@
 # GoEmon
 
-GoEmon is a personal AI agent written in Go. It runs on a Raspberry Pi 4B, uses a remote [Ollama](https://ollama.com/) instance as the primary LLM backend, and falls back to cloud APIs (Claude, Gemini) for heavy tasks.
+GoEmon is a personal AI agent written in Go. It runs on a Raspberry Pi or any Linux/macOS machine, uses [Ollama](https://ollama.com/) as the primary LLM backend, and can delegate complex coding tasks to [Claude Code](https://claude.com/claude-code) via a built-in skill.
 
 GoEmon can create its own **skills** (modular extensions) and propose improvements to its own codebase via pull requests.
 
 **Name origin:** Go (the language) + 右衛門 (emon, Japanese name suffix) = GoEmon. Also a reference to Goemon Ishikawa, the legendary thief who operates autonomously in the shadows.
 
+## Architecture
+
+GoEmon has three layers:
+
+- **Adapters** — External interfaces (CLI, Telegram, Discord, Web UI) that connect users to the agent
+- **Core Agent** — ReAct loop, LLM routing, memory
+- **Tools & Skills** — Built-in tools (Go) and external skills (bash/python scripts)
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
+
 ## Requirements
 
 - Go 1.26+
-- An Ollama instance on LAN, **or** an Anthropic API key (`ANTHROPIC_API_KEY`)
+- An Ollama instance (local or on LAN)
 - SQLite is embedded via [modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite) — no CGO required
 
 ## Quick Start
@@ -18,10 +28,10 @@ GoEmon can create its own **skills** (modular extensions) and propose improvemen
 # Build
 make build
 
-# Initialize config and data directory
+# Initialize config, data directory, and standard skills
 ./bin/goemon init
 
-# Edit ~/.goemon/config.json to set your Ollama endpoint / API keys
+# Edit ~/.goemon/config.json to set your Ollama endpoint
 
 # Start interactive chat
 ./bin/goemon chat
@@ -69,38 +79,47 @@ goemon skill remove <name>       # Remove a skill
 
 Skills are reusable automation modules stored in `~/.goemon/skills/`. Each skill is a directory containing:
 
-- `SKILL.md` — metadata (description, trigger, entry point, language, I/O spec)
+- `SKILL.md` — metadata (description, trigger, entry point, language, I/O spec, config)
 - An entry point script (bash or python) that reads JSON on stdin and writes JSON on stdout
 
-GoEmon can create new skills on the fly via the `skill_create` tool during chat.
+### Standard Skills
 
-See [`examples/skills/`](examples/skills/) for examples.
+Shipped with GoEmon and extracted on `goemon init`. Users can view and modify them.
 
-## LLM Routing
+| Skill          | Description                                      |
+|----------------|--------------------------------------------------|
+| `claude-code`  | Delegate complex coding tasks to Claude Code CLI |
+| `github-pr`    | Create pull requests on GitHub repositories      |
+| `hello-world`  | Minimal example skill for testing                |
 
-GoEmon routes LLM requests through a configurable backend system:
+### Skill Config
 
-1. Tasks in `force_cloud_for` list → cloud backend (e.g., skill creation)
-2. Default backend available → use it (typically Ollama)
-3. Default unavailable → fallback (typically Claude)
-4. Nothing available → error
+Skills that need configuration use the `skills` section in `config.json`. Secrets use the `_env` suffix convention (only the environment variable name is stored):
 
-A background health check runs periodically to track backend availability.
+```json
+{
+    "skills": {
+        "my-skill": {
+            "api_key_env": "MY_API_KEY",
+            "some_setting": "value"
+        }
+    }
+}
+```
+
+GoEmon can also create new skills on the fly via the `skill_create` tool during chat.
 
 ## Configuration
 
 Config lives at `~/.goemon/config.json`. See [`templates/config.example.json`](templates/config.example.json) for the full schema.
 
-Key settings:
-
 ```jsonc
 {
   "llm": {
     "backends": {
-      "ollama": { "endpoint": "http://localhost:11434", "model": "qwen3-coder:14b" },
-      "claude": { "model": "claude-sonnet-4-6-20250514", "api_key_env": "ANTHROPIC_API_KEY" }
+      "ollama": { "endpoint": "http://localhost:11434", "model": "qwen2.5-coder:14b" }
     },
-    "routing": { "default": "ollama", "fallback": "claude" }
+    "routing": { "default": "ollama" }
   },
   "agent": { "max_iterations": 10 }
 }
