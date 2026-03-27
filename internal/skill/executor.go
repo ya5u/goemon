@@ -36,7 +36,6 @@ func (e *Executor) Run(ctx context.Context, info *SkillInfo, input string) (stri
 	case "python", "python3":
 		cmd = exec.CommandContext(ctx, "python3", entryPoint)
 	default:
-		// Try to run directly
 		cmd = exec.CommandContext(ctx, entryPoint)
 	}
 
@@ -62,7 +61,6 @@ func (e *Executor) Run(ctx context.Context, info *SkillInfo, input string) (stri
 		output = errMsg
 	}
 
-	// Log to database
 	if e.store != nil {
 		if logErr := e.store.LogSkillRun(info.Name, input, output, success, errMsg, duration); logErr != nil {
 			slog.Warn("failed to log skill run", "error", logErr)

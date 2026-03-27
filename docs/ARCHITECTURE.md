@@ -85,20 +85,23 @@ The `claude-code` skill allows GoEmon to use a local Ollama model as its primary
 
 #### Skill Config
 
-Skills that require configuration (API keys, settings) use the `skills` section in `config.json`:
+Each skill can have its own `config.json` in its directory:
+
+```
+~/.goemon/skills/reddit-monitor/
+├── SKILL.md
+├── main.sh
+└── config.json
+```
 
 ```json
 {
-    "skills": {
-        "reddit-monitor": {
-            "subreddits": ["golang", "localllm"],
-            "api_key_env": "REDDIT_API_KEY"
-        }
-    }
+    "subreddits": ["golang", "localllm"],
+    "api_key_env": "REDDIT_API_KEY"
 }
 ```
 
-Secrets follow the `_env` suffix convention — only the environment variable name is stored in the config file. The executor resolves the actual value at runtime before passing it to the skill.
+Configuration is entirely the skill's responsibility. The executor simply runs the skill script — it does not read or inject config. Skills can read their own `config.json`, environment variables, or any other mechanism they prefer.
 
 ## LLM Backend
 

@@ -44,21 +44,11 @@ func Default() *Config {
 			Backends: map[string]BackendConfig{
 				"ollama": {
 					Endpoint: "http://localhost:11434",
-					Model:    "qwen3-coder:14b",
-				},
-				"claude": {
-					Model:    "claude-sonnet-4-6-20250514",
-					APIKeyEnv: "ANTHROPIC_API_KEY",
-				},
-				"gemini": {
-					Model:    "gemini-3.1-flash-lite-preview",
-					APIKeyEnv: "GEMINI_API_KEY",
+					Model:    "qwen2.5-coder:14b",
 				},
 			},
 			Routing: RoutingConfig{
 				Default:              "ollama",
-				Fallback:             "claude",
-				ForceCloudFor:        []string{"skill_creation"},
 				HealthCheckIntervalS: 30,
 			},
 		},

@@ -3,21 +3,11 @@
         "backends": {
             "ollama": {
                 "endpoint": "http://localhost:11434",
-                "model": "qwen3-coder:14b"
-            },
-            "claude": {
-                "model": "claude-sonnet-4-6-20250514",
-                "api_key_env": "ANTHROPIC_API_KEY"
-            },
-            "gemini": {
-                "model": "gemini-3.1-flash-lite-preview",
-                "api_key_env": "GEMINI_API_KEY"
+                "model": "qwen2.5-coder:14b"
             }
         },
         "routing": {
             "default": "ollama",
-            "fallback": "claude",
-            "force_cloud_for": ["skill_creation"],
             "health_check_interval_sec": 30
         }
     },

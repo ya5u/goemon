@@ -85,6 +85,7 @@ cat  # echo stdin to stdout
 	if err != nil {
 		t.Fatal(err)
 	}
+	// No config.json in skill dir, so input passes through as-is
 	if output != `{"hello":"world"}` {
 		t.Errorf("unexpected output: %q", output)
 	}

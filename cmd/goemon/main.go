@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -16,6 +17,7 @@ import (
 	"github.com/ya5u/goemon/internal/llm"
 	"github.com/ya5u/goemon/internal/memory"
 	"github.com/ya5u/goemon/internal/skill"
+	"github.com/ya5u/goemon/internal/skill/stdskills"
 	"github.com/ya5u/goemon/internal/tool"
 )
 
@@ -93,10 +95,12 @@ func runInit() error {
 		return err
 	}
 
-	if err := os.MkdirAll(filepath.Join(dataDir, "skills"), 0755); err != nil {
+	skillsDir := filepath.Join(dataDir, "skills")
+	if err := os.MkdirAll(skillsDir, 0755); err != nil {
 		return err
 	}
 
+	// Write config
 	cfgPath := filepath.Join(dataDir, "config.json")
 	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
 		cfg := config.Default()
@@ -112,8 +116,57 @@ func runInit() error {
 		fmt.Printf("Config already exists: %s\n", cfgPath)
 	}
 
+	// Extract standard skills
+	if err := extractStandardSkills(skillsDir); err != nil {
+		return fmt.Errorf("extract standard skills: %w", err)
+	}
+
 	fmt.Printf("GoEmon initialized at %s\n", dataDir)
 	return nil
+}
+
+func extractStandardSkills(skillsDir string) error {
+	return fs.WalkDir(stdskills.StandardSkills, "skills", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		// Strip the "skills/" prefix to get the relative path
+		relPath, err := filepath.Rel("skills", path)
+		if err != nil {
+			return err
+		}
+		if relPath == "." {
+			return nil
+		}
+
+		destPath := filepath.Join(skillsDir, relPath)
+
+		if d.IsDir() {
+			return os.MkdirAll(destPath, 0755)
+		}
+
+		// Don't overwrite existing files (user may have modified them)
+		if _, err := os.Stat(destPath); err == nil {
+			return nil
+		}
+
+		data, err := stdskills.StandardSkills.ReadFile(path)
+		if err != nil {
+			return err
+		}
+
+		perm := os.FileMode(0644)
+		if strings.HasSuffix(path, ".sh") || strings.HasSuffix(path, ".py") {
+			perm = 0755
+		}
+
+		if err := os.WriteFile(destPath, data, perm); err != nil {
+			return err
+		}
+		fmt.Printf("Extracted skill: %s\n", relPath)
+		return nil
+	})
 }
 
 func setupAgent(cfg *config.Config, store *memory.Store) (*agent.Agent, *agent.Router) {
@@ -122,12 +175,6 @@ func setupAgent(cfg *config.Config, store *memory.Store) (*agent.Agent, *agent.R
 
 	if bc, ok := cfg.LLM.Backends["ollama"]; ok {
 		backends["ollama"] = llm.NewOllama(bc.Endpoint, bc.Model)
-	}
-	if bc, ok := cfg.LLM.Backends["claude"]; ok {
-		backends["claude"] = llm.NewClaude(bc.Model, bc.APIKeyEnv)
-	}
-	if bc, ok := cfg.LLM.Backends["gemini"]; ok {
-		backends["gemini"] = llm.NewGemini(bc.Model, bc.APIKeyEnv)
 	}
 
 	router := agent.NewRouter(agent.RouterConfig{

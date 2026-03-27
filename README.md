@@ -84,7 +84,7 @@ Skills are reusable automation modules stored in `~/.goemon/skills/`. Each skill
 
 ### Standard Skills
 
-Shipped with GoEmon and extracted on `goemon init`. Users can view and modify them.
+Shipped with GoEmon and extracted on `goemon init`. Users can view and modify them. Source is in [`internal/skill/stdskills/skills/`](internal/skill/stdskills/skills/).
 
 | Skill          | Description                                      |
 |----------------|--------------------------------------------------|
@@ -94,16 +94,21 @@ Shipped with GoEmon and extracted on `goemon init`. Users can view and modify th
 
 ### Skill Config
 
-Skills that need configuration use the `skills` section in `config.json`. Secrets use the `_env` suffix convention (only the environment variable name is stored):
+Each skill can have its own `config.json` in its directory:
+
+```
+~/.goemon/skills/my-skill/
+├── SKILL.md
+├── main.sh
+└── config.json
+```
+
+Configuration is entirely the skill's responsibility. For example, a skill might use a `config.json` in its directory:
 
 ```json
 {
-    "skills": {
-        "my-skill": {
-            "api_key_env": "MY_API_KEY",
-            "some_setting": "value"
-        }
-    }
+    "api_key_env": "MY_API_KEY",
+    "some_setting": "value"
 }
 ```
 
