@@ -7,9 +7,20 @@ import (
 )
 
 type Config struct {
-	LLM    LLMConfig    `json:"llm"`
-	Agent  AgentConfig  `json:"agent"`
-	Memory MemoryConfig `json:"memory"`
+	LLM      LLMConfig      `json:"llm"`
+	Agent    AgentConfig    `json:"agent"`
+	Memory   MemoryConfig   `json:"memory"`
+	Adapters AdaptersConfig `json:"adapters"`
+}
+
+type AdaptersConfig struct {
+	Telegram TelegramConfig `json:"telegram"`
+}
+
+type TelegramConfig struct {
+	Enabled      bool     `json:"enabled"`
+	BotTokenEnv  string   `json:"bot_token_env"`
+	AllowedUsers []int64  `json:"allowed_users,omitempty"`
 }
 
 type LLMConfig struct {

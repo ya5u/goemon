@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/ya5u/goemon/internal/adapter"
 	"github.com/ya5u/goemon/internal/agent"
 	"github.com/ya5u/goemon/internal/config"
 	"github.com/ya5u/goemon/internal/llm"
@@ -62,6 +63,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
+	case "serve":
+		if err := runServe(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 	case "skill":
 		if err := runSkill(os.Args[2:]); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -84,6 +90,7 @@ Commands:
   init       Initialize ~/.goemon/ directory
   chat       Start interactive chat session
   run        Run a one-shot command
+  serve      Start enabled adapters (Telegram, etc.)
   skill      Manage skills (list, run, create, install, remove)
   version    Show version
 `)
@@ -312,6 +319,80 @@ func runOneShot(input string) error {
 
 	_, err = ag.Run(ctx, input)
 	return err
+}
+
+func runServe() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	dataDir, err := config.DataDir()
+	if err != nil {
+		return err
+	}
+
+	store, err := memory.New(filepath.Join(dataDir, "memory.db"))
+	if err != nil {
+		return fmt.Errorf("open memory: %w", err)
+	}
+	defer store.Close()
+
+	ag, router := setupAgent(cfg, store)
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	router.Start(ctx)
+	defer router.Stop()
+
+	// Collect enabled adapters
+	var adapters []adapter.Adapter
+
+	if cfg.Adapters.Telegram.Enabled {
+		tg, err := adapter.NewTelegram(cfg.Adapters.Telegram.BotTokenEnv, cfg.Adapters.Telegram.AllowedUsers)
+		if err != nil {
+			return fmt.Errorf("telegram adapter: %w", err)
+		}
+		adapters = append(adapters, tg)
+	}
+
+	if len(adapters) == 0 {
+		return fmt.Errorf("no adapters enabled in config. Enable at least one adapter in ~/.goemon/config.json")
+	}
+
+	fmt.Printf("GoEmon %s | LLM: %s\n", version, router.CurrentBackendName())
+
+	// Handler that runs the agent
+	handler := func(ctx context.Context, userMessage string) (string, error) {
+		return ag.Run(ctx, userMessage)
+	}
+
+	// Start all adapters
+	errCh := make(chan error, len(adapters))
+	for _, a := range adapters {
+		fmt.Printf("Starting adapter: %s\n", a.Name())
+		go func(a adapter.Adapter) {
+			errCh <- a.Start(ctx, handler)
+		}(a)
+	}
+
+	// Wait for context cancellation or adapter error
+	select {
+	case <-ctx.Done():
+		fmt.Println("\nShutting down...")
+	case err := <-errCh:
+		if err != nil {
+			return fmt.Errorf("adapter error: %w", err)
+		}
+	}
+
+	// Stop all adapters
+	for _, a := range adapters {
+		a.Stop()
+	}
+
+	return nil
 }
 
 func runSkill(args []string) error {
