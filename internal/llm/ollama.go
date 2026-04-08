@@ -23,7 +23,7 @@ func NewOllama(endpoint, model string) *OllamaBackend {
 	return &OllamaBackend{
 		endpoint: endpoint,
 		model:    model,
-		client:   &http.Client{Timeout: 120 * time.Second},
+		client:   &http.Client{Timeout: 15 * time.Minute},
 	}
 }
 
@@ -44,60 +44,83 @@ func (o *OllamaBackend) IsAvailable(ctx context.Context) bool {
 	return resp.StatusCode == http.StatusOK
 }
 
+// Ollama native API types
+
+type ollamaMessage struct {
+	Role      string           `json:"role"`
+	Content   string           `json:"content"`
+	ToolCalls []ollamaToolCall `json:"tool_calls,omitempty"`
+}
+
+type ollamaToolCall struct {
+	Function ollamaFunction `json:"function"`
+}
+
+type ollamaFunction struct {
+	Name      string         `json:"name"`
+	Arguments map[string]any `json:"arguments"`
+}
+
+type ollamaTool struct {
+	Type     string `json:"type"`
+	Function struct {
+		Name        string         `json:"name"`
+		Description string         `json:"description"`
+		Parameters  map[string]any `json:"parameters"`
+	} `json:"function"`
+}
+
+type ollamaResponse struct {
+	Message struct {
+		Role      string           `json:"role"`
+		Content   string           `json:"content"`
+		ToolCalls []ollamaToolCall `json:"tool_calls,omitempty"`
+	} `json:"message"`
+	Done bool `json:"done"`
+}
+
 func (o *OllamaBackend) Chat(ctx context.Context, messages []Message, tools []ToolDefinition) (*Response, error) {
-	// Build OpenAI-compatible request
-	type openAIMessage struct {
-		Role       string `json:"role"`
-		Content    string `json:"content,omitempty"`
-		Name       string `json:"name,omitempty"`
-		ToolCallID string `json:"tool_call_id,omitempty"`
-	}
-	type openAITool struct {
-		Type     string `json:"type"`
-		Function struct {
-			Name        string         `json:"name"`
-			Description string         `json:"description"`
-			Parameters  map[string]any `json:"parameters"`
-		} `json:"function"`
-	}
-
-	var oaiMessages []openAIMessage
+	// Build Ollama native API request
+	var ollamaMessages []ollamaMessage
 	for _, m := range messages {
-		msg := openAIMessage{
-			Role:       m.Role,
-			Content:    m.Content,
-			Name:       m.Name,
-			ToolCallID: m.ToolID,
+		msg := ollamaMessage{
+			Role:    m.Role,
+			Content: m.Content,
 		}
-		// Ollama doesn't accept empty content or "tool" role well.
-		// Convert tool results to user messages for compatibility.
-		if m.Role == "tool" {
-			msg.Role = "user"
-			msg.Content = fmt.Sprintf("[Tool result from %s]: %s", m.Name, m.Content)
-			msg.ToolCallID = ""
-			msg.Name = ""
+
+		// Include tool_calls in assistant messages
+		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+			for _, tc := range m.ToolCalls {
+				var args map[string]any
+				json.Unmarshal(tc.Arguments, &args)
+				msg.ToolCalls = append(msg.ToolCalls, ollamaToolCall{
+					Function: ollamaFunction{
+						Name:      tc.Name,
+						Arguments: args,
+					},
+				})
+			}
 		}
-		if msg.Content == "" {
-			msg.Content = "(no content)"
-		}
-		oaiMessages = append(oaiMessages, msg)
+
+		ollamaMessages = append(ollamaMessages, msg)
 	}
 
-	var oaiTools []openAITool
+	var ollamaTools []ollamaTool
 	for _, t := range tools {
-		ot := openAITool{Type: "function"}
+		ot := ollamaTool{Type: "function"}
 		ot.Function.Name = t.Name
 		ot.Function.Description = t.Description
 		ot.Function.Parameters = t.Parameters
-		oaiTools = append(oaiTools, ot)
+		ollamaTools = append(ollamaTools, ot)
 	}
 
 	body := map[string]any{
 		"model":    o.model,
-		"messages": oaiMessages,
+		"messages": ollamaMessages,
+		"stream":   false,
 	}
-	if len(oaiTools) > 0 {
-		body["tools"] = oaiTools
+	if len(ollamaTools) > 0 {
+		body["tools"] = ollamaTools
 	}
 
 	jsonBody, err := json.Marshal(body)
@@ -105,7 +128,9 @@ func (o *OllamaBackend) Chat(ctx context.Context, messages []Message, tools []To
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.endpoint+"/v1/chat/completions", bytes.NewReader(jsonBody))
+	slog.Debug("ollama request", "tools_count", len(ollamaTools), "messages_count", len(ollamaMessages), "body", string(jsonBody))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.endpoint+"/api/chat", bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -128,35 +153,24 @@ func (o *OllamaBackend) Chat(ctx context.Context, messages []Message, tools []To
 
 	slog.Debug("ollama raw response", "body", string(respBody))
 
-	var oaiResp struct {
-		Choices []struct {
-			Message struct {
-				Content   string `json:"content"`
-				ToolCalls []struct {
-					ID       string `json:"id"`
-					Function struct {
-						Name      string `json:"name"`
-						Arguments string `json:"arguments"`
-					} `json:"function"`
-				} `json:"tool_calls"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(respBody, &oaiResp); err != nil {
+	var ollamaResp ollamaResponse
+	if err := json.Unmarshal(respBody, &ollamaResp); err != nil {
 		return nil, fmt.Errorf("unmarshal response: %w", err)
 	}
 
-	if len(oaiResp.Choices) == 0 {
-		return nil, fmt.Errorf("no choices in response")
-	}
+	result := &Response{Content: ollamaResp.Message.Content}
 
-	choice := oaiResp.Choices[0].Message
-	result := &Response{Content: choice.Content}
-	for _, tc := range choice.ToolCalls {
+	// Parse native tool calls
+	for i, tc := range ollamaResp.Message.ToolCalls {
+		argsJSON, err := json.Marshal(tc.Function.Arguments)
+		if err != nil {
+			slog.Warn("failed to marshal tool call arguments", "error", err)
+			continue
+		}
 		result.ToolCalls = append(result.ToolCalls, ToolCall{
-			ID:        tc.ID,
+			ID:        fmt.Sprintf("call_%d", i),
 			Name:      tc.Function.Name,
-			Arguments: json.RawMessage(tc.Function.Arguments),
+			Arguments: argsJSON,
 		})
 	}
 

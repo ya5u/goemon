@@ -19,6 +19,19 @@ type Conversation struct {
 	CreatedAt time.Time
 }
 
+type WorkflowRun struct {
+	ID           int64
+	WorkflowName string
+	StepName     string
+	StepType     string
+	Input        string
+	Output       string
+	Success      bool
+	ErrorMessage string
+	DurationMs   int64
+	CreatedAt    time.Time
+}
+
 type SkillRun struct {
 	ID           int64
 	SkillName    string
@@ -66,6 +79,18 @@ func (s *Store) migrate() error {
 			value TEXT NOT NULL,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS workflow_runs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			workflow_name TEXT NOT NULL,
+			step_name TEXT NOT NULL,
+			step_type TEXT NOT NULL,
+			input TEXT,
+			output TEXT,
+			success BOOLEAN NOT NULL,
+			error_message TEXT,
+			duration_ms INTEGER,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE TABLE IF NOT EXISTS skill_runs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -151,6 +176,39 @@ func (s *Store) Recall(key string) ([]struct{ Key, Value string }, error) {
 		results = append(results, kv)
 	}
 	return results, rows.Err()
+}
+
+// Workflow run logging
+
+func (s *Store) LogWorkflowStep(workflowName, stepName, stepType, input, output string, success bool, errMsg string, durationMs int64) error {
+	_, err := s.db.Exec(
+		`INSERT INTO workflow_runs (workflow_name, step_name, step_type, input, output, success, error_message, duration_ms)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		workflowName, stepName, stepType, input, output, success, errMsg, durationMs,
+	)
+	return err
+}
+
+func (s *Store) GetWorkflowRuns(workflowName string, limit int) ([]WorkflowRun, error) {
+	rows, err := s.db.Query(
+		`SELECT id, workflow_name, step_name, step_type, input, output, success, error_message, duration_ms, created_at
+		 FROM workflow_runs WHERE workflow_name = ? ORDER BY id DESC LIMIT ?`,
+		workflowName, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var runs []WorkflowRun
+	for rows.Next() {
+		var r WorkflowRun
+		if err := rows.Scan(&r.ID, &r.WorkflowName, &r.StepName, &r.StepType, &r.Input, &r.Output, &r.Success, &r.ErrorMessage, &r.DurationMs, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		runs = append(runs, r)
+	}
+	return runs, rows.Err()
 }
 
 // Skill run logging

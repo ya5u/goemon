@@ -57,8 +57,7 @@ Built-in capabilities compiled into the GoEmon binary. The Agent calls these dir
 | `file_read`    | Read file contents              |
 | `file_write`   | Write content to file           |
 | `web_fetch`    | HTTP GET with HTML stripping    |
-| `memory_store` | Store key-value in SQLite       |
-| `memory_recall`| Recall by key (partial match)   |
+| `memory`       | Store/recall key-value pairs in SQLite |
 
 ### Skills
 
@@ -124,12 +123,17 @@ All user data lives in `~/.goemon/`:
 ```
 ~/.goemon/
 ├── config.json      # User configuration
-├── memory.db        # SQLite: conversations, KV memory, skill run logs
-└── skills/          # Installed skills (standard + user)
-    ├── claude-code/
-    ├── github-pr/
-    ├── hello-world/
-    └── ...
+├── AGENTS.md        # System prompt customization
+├── memory.db        # SQLite: conversations, KV memory, skill/workflow logs
+├── skills/          # Installed skills (standard + user)
+│   ├── claude-code/
+│   ├── github-pr/
+│   ├── hello-world/
+│   └── web-search/
+└── workflows/       # Workflow definitions
+    └── ai-news-digest/
+        ├── workflow.yaml
+        └── *.sh
 ```
 
 ## Commands
@@ -139,7 +143,9 @@ All user data lives in `~/.goemon/`:
 | `goemon init`        | Initialize `~/.goemon/` with config and standard skills |
 | `goemon chat`        | Interactive REPL (CLI adapter)       |
 | `goemon run "<msg>"` | One-shot command                     |
-| `goemon serve`       | Start all enabled adapters (Phase 3) |
+| `goemon serve`       | Start adapters + workflow scheduler |
+| `goemon workflow list` | List installed workflows           |
+| `goemon workflow run`  | Run a workflow manually            |
 | `goemon skill list`  | List installed skills                |
 | `goemon skill run`   | Run a skill                          |
 | `goemon skill install` | Install skill from GitHub          |

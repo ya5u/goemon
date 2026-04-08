@@ -52,6 +52,10 @@ goemon skill list                # List installed skills
 goemon skill run <name> [input]  # Run a skill
 goemon skill install <url>       # Install skill from GitHub
 goemon skill remove <name>       # Remove a skill
+
+goemon workflow list             # List workflows
+goemon workflow run <name>       # Run a workflow manually
+goemon serve                     # Start adapters + workflow scheduler
 ```
 
 ### Chat Slash Commands
@@ -72,15 +76,13 @@ goemon skill remove <name>       # Remove a skill
 | `file_read`    | Read file contents (max 100KB)     |
 | `file_write`   | Write content to file              |
 | `web_fetch`    | HTTP GET with HTML tag stripping   |
-| `memory_store` | Store key-value pair in SQLite     |
-| `memory_recall`| Recall by key (partial matching)   |
+| `memory`       | Store/recall key-value pairs in SQLite |
 
 ## Skills
 
-Skills are reusable automation modules stored in `~/.goemon/skills/`. Each skill is a directory containing:
+Skills are reusable automation modules stored in `~/.goemon/skills/`. Each skill is a directory containing a `SKILL.md` and an entry point script. Skills are automatically registered as LLM tools and dynamically discovered (no restart needed).
 
-- `SKILL.md` — metadata (description, trigger, entry point, language, I/O spec, config)
-- An entry point script (bash or python) that reads JSON on stdin and writes JSON on stdout
+See [docs/SKILL.md](docs/SKILL.md) for the full specification.
 
 ### Standard Skills
 
@@ -112,11 +114,26 @@ Configuration is entirely the skill's responsibility. For example, a skill might
 }
 ```
 
-GoEmon can also create new skills on the fly via the `skill_create` tool during chat.
+## Workflows
+
+Workflows are multi-step automation tasks defined in YAML. Steps can be **prompt** (LLM execution) or **script** (shell/python). A shared workspace directory handles state between steps.
+
+```
+~/.goemon/workflows/
+└── ai-news-digest/
+    ├── workflow.yaml
+    ├── search.sh
+    ├── fetch.sh
+    └── generate.sh
+```
+
+Workflows run on a cron schedule via `goemon serve` or manually via `goemon workflow run <name>`.
+
+See [docs/WORKFLOW.md](docs/WORKFLOW.md) for the full specification.
 
 ## Configuration
 
-Config lives at `~/.goemon/config.json`. See [`templates/config.example.json`](templates/config.example.json) for the full schema.
+Config lives at `~/.goemon/config.json`.
 
 ```jsonc
 {

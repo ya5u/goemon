@@ -73,11 +73,10 @@ func TestMemoryTools(t *testing.T) {
 	}
 	defer store.Close()
 
-	ms := NewMemoryStore(store)
-	mr := NewMemoryRecall(store)
+	m := NewMemory(store)
 
 	// Store
-	result, err := ms.Execute(context.Background(), json.RawMessage(`{"key":"test.key","value":"test value"}`))
+	result, err := m.Execute(context.Background(), json.RawMessage(`{"action":"store","key":"test.key","value":"test value"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +85,7 @@ func TestMemoryTools(t *testing.T) {
 	}
 
 	// Recall
-	result, err = mr.Execute(context.Background(), json.RawMessage(`{"key":"test"}`))
+	result, err = m.Execute(context.Background(), json.RawMessage(`{"action":"recall","key":"test"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +94,7 @@ func TestMemoryTools(t *testing.T) {
 	}
 
 	// Recall no match
-	result, err = mr.Execute(context.Background(), json.RawMessage(`{"key":"nonexistent"}`))
+	result, err = m.Execute(context.Background(), json.RawMessage(`{"action":"recall","key":"nonexistent"}`))
 	if err != nil {
 		t.Fatal(err)
 	}

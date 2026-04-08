@@ -10,102 +10,77 @@ import (
 	"github.com/ya5u/goemon/internal/memory"
 )
 
-// MemoryStore
+// Memory is a unified tool that combines store and recall operations.
 
-type MemoryStore struct {
+type Memory struct {
 	store *memory.Store
 }
 
-func NewMemoryStore(store *memory.Store) *MemoryStore {
-	return &MemoryStore{store: store}
+func NewMemory(store *memory.Store) *Memory {
+	return &Memory{store: store}
 }
 
-func (m *MemoryStore) Name() string        { return "memory_store" }
-func (m *MemoryStore) Description() string { return "Store a key-value pair in persistent memory." }
+func (m *Memory) Name() string { return "memory" }
+func (m *Memory) Description() string {
+	return "Store or recall key-value pairs in persistent memory. Use action 'store' to save, 'recall' to retrieve."
+}
 
-func (m *MemoryStore) Parameters() map[string]any {
+func (m *Memory) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
+			"action": map[string]any{
+				"type":        "string",
+				"enum":        []string{"store", "recall"},
+				"description": "Action to perform: 'store' or 'recall'",
+			},
 			"key": map[string]any{
 				"type":        "string",
-				"description": "Key to store the value under",
+				"description": "Key to store under or search for",
 			},
 			"value": map[string]any{
 				"type":        "string",
-				"description": "Value to store",
+				"description": "Value to store (required for 'store' action)",
 			},
 		},
-		"required": []string{"key", "value"},
+		"required": []string{"action", "key"},
 	}
 }
 
-func (m *MemoryStore) Execute(_ context.Context, args json.RawMessage) (string, error) {
+func (m *Memory) Execute(_ context.Context, args json.RawMessage) (string, error) {
 	var params struct {
-		Key   string `json:"key"`
-		Value string `json:"value"`
+		Action string `json:"action"`
+		Key    string `json:"key"`
+		Value  string `json:"value"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", fmt.Errorf("parse args: %w", err)
 	}
 
-	slog.Info("memory_store", "key", params.Key)
+	switch params.Action {
+	case "store":
+		slog.Info("memory store", "key", params.Key)
+		if err := m.store.Store(params.Key, params.Value); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("Stored key %q", params.Key), nil
 
-	if err := m.store.Store(params.Key, params.Value); err != nil {
-		return "", err
+	case "recall":
+		slog.Info("memory recall", "key", params.Key)
+		results, err := m.store.Recall(params.Key)
+		if err != nil {
+			return "", err
+		}
+		if len(results) == 0 {
+			return "No matching memories found.", nil
+		}
+		var sb strings.Builder
+		for _, r := range results {
+			fmt.Fprintf(&sb, "%s: %s\n", r.Key, r.Value)
+		}
+		return sb.String(), nil
+
+	default:
+		return "", fmt.Errorf("unknown action: %s (use 'store' or 'recall')", params.Action)
 	}
-	return fmt.Sprintf("Stored key %q", params.Key), nil
-}
-
-// MemoryRecall
-
-type MemoryRecall struct {
-	store *memory.Store
-}
-
-func NewMemoryRecall(store *memory.Store) *MemoryRecall {
-	return &MemoryRecall{store: store}
-}
-
-func (m *MemoryRecall) Name() string { return "memory_recall" }
-func (m *MemoryRecall) Description() string {
-	return "Recall stored values by key. Supports partial matching."
-}
-
-func (m *MemoryRecall) Parameters() map[string]any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"key": map[string]any{
-				"type":        "string",
-				"description": "Key or partial key to search for",
-			},
-		},
-		"required": []string{"key"},
-	}
-}
-
-func (m *MemoryRecall) Execute(_ context.Context, args json.RawMessage) (string, error) {
-	var params struct {
-		Key string `json:"key"`
-	}
-	if err := json.Unmarshal(args, &params); err != nil {
-		return "", fmt.Errorf("parse args: %w", err)
-	}
-
-	slog.Info("memory_recall", "key", params.Key)
-
-	results, err := m.store.Recall(params.Key)
-	if err != nil {
-		return "", err
-	}
-	if len(results) == 0 {
-		return "No matching memories found.", nil
-	}
-
-	var sb strings.Builder
-	for _, r := range results {
-		fmt.Fprintf(&sb, "%s: %s\n", r.Key, r.Value)
-	}
-	return sb.String(), nil
 }

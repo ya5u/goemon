@@ -21,8 +21,10 @@ func NewWebFetch() *WebFetch {
 	}
 }
 
-func (w *WebFetch) Name() string        { return "web_fetch" }
-func (w *WebFetch) Description() string { return "Fetch a web page via HTTP GET. HTML tags are stripped." }
+func (w *WebFetch) Name() string { return "web_fetch" }
+func (w *WebFetch) Description() string {
+	return "Fetch a web page via HTTP GET. HTML tags are stripped."
+}
 
 func (w *WebFetch) Parameters() map[string]any {
 	return map[string]any{
@@ -68,8 +70,14 @@ func (w *WebFetch) Execute(ctx context.Context, args json.RawMessage) (string, e
 	return fmt.Sprintf("Status: %d\n\n%s", resp.StatusCode, text), nil
 }
 
-var htmlTagRe = regexp.MustCompile(`<[^>]*>`)
+var (
+	scriptRe  = regexp.MustCompile(`(?is)<script[^>]*>.*?</script>`)
+	styleRe   = regexp.MustCompile(`(?is)<style[^>]*>.*?</style>`)
+	htmlTagRe = regexp.MustCompile(`<[^>]*>`)
+)
 
 func stripHTML(s string) string {
+	s = scriptRe.ReplaceAllString(s, "")
+	s = styleRe.ReplaceAllString(s, "")
 	return htmlTagRe.ReplaceAllString(s, "")
 }

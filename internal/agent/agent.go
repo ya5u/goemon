@@ -5,39 +5,24 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strings"
+	"os"
+	"path/filepath"
 	"time"
 
+	"github.com/ya5u/goemon/internal/config"
 	"github.com/ya5u/goemon/internal/llm"
 	"github.com/ya5u/goemon/internal/memory"
 	"github.com/ya5u/goemon/internal/tool"
 )
 
-const systemPrompt = `You are GoEmon, a personal AI agent for a solo developer.
-
-You have access to tools that let you execute shell commands, read/write files, fetch web pages, and manage persistent memory. You also have a skill system for reusable automation.
-
-IMPORTANT RULES:
-- Only use tools when the user's request actually requires an action (running commands, reading files, fetching data, etc.)
-- For greetings, casual conversation, questions you can answer from knowledge, or simple replies, just respond directly with text. Do NOT call any tools.
-- Always respond in the same language the user is using.
-- Be concise and direct.
-- If you encounter an error, try to diagnose and fix it before giving up.
-
-Available tools:
-- shell_exec: Execute shell commands
-- file_read/file_write: Read/write files
-- web_fetch: Fetch web pages
-- memory_store/memory_recall: Persistent key-value memory
-- skill_list/skill_run/skill_create: Manage and run reusable skills in ~/.goemon/skills/
-
-When creating skills, prefer shell scripts for simple tasks, Python for complex logic.`
+const baseSystemPrompt = `You have access to tools. Only call tools when the user's request requires an action. For conversation or questions you can answer from knowledge, respond directly without tools.`
 
 type Agent struct {
 	router        *Router
 	registry      *tool.Registry
 	store         *memory.Store
 	maxIterations int
+	skipHistory   bool // when true, don't save to conversation history
 	onThinking    func(text string)
 	onToolCall    func(name string, args json.RawMessage)
 	onToolResult  func(name string, result string)
@@ -82,26 +67,78 @@ func NewAgent(router *Router, registry *tool.Registry, store *memory.Store, opts
 }
 
 func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
-	// Load conversation history
-	history, err := a.store.LoadHistory(50)
-	if err != nil {
-		slog.Warn("failed to load history", "error", err)
+	if needsPlanning(userInput) {
+		return a.runPlanAndExecute(ctx, userInput)
 	}
+	return a.runSimple(ctx, userInput)
+}
+
+// RunWithPlan forces plan-and-execute mode regardless of complexity detection.
+func (a *Agent) RunWithPlan(ctx context.Context, userInput string) (string, error) {
+	return a.runPlanAndExecute(ctx, userInput)
+}
+
+// RunWithoutHistory runs the agent without saving to conversation history.
+// Used by workflow steps to avoid polluting chat history.
+// Always uses simple ReAct (no plan-and-execute) since workflow steps
+// are already decomposed into focused tasks.
+func (a *Agent) RunWithoutHistory(ctx context.Context, userInput string) (string, error) {
+	a.skipHistory = true
+	defer func() { a.skipHistory = false }()
 
 	var messages []llm.Message
-	messages = append(messages, llm.Message{Role: "system", Content: systemPrompt})
-	for _, h := range history {
-		messages = append(messages, llm.Message{Role: h.Role, Content: h.Content})
-	}
+	messages = append(messages, llm.Message{Role: "system", Content: a.buildSystemPrompt()})
 	messages = append(messages, llm.Message{Role: "user", Content: userInput})
 
-	// Save user message
-	if err := a.store.SaveMessage("user", userInput); err != nil {
-		slog.Warn("failed to save user message", "error", err)
+	result, err := a.executeReAct(ctx, messages, a.registry.Definitions())
+	if err != nil {
+		return "", err
 	}
 
-	toolDefs := a.registry.Definitions()
+	a.onResponse(result)
+	return result, nil
+}
 
+// runSimple is the original Run() logic with conversation history and memory.
+func (a *Agent) runSimple(ctx context.Context, userInput string) (string, error) {
+	var messages []llm.Message
+	messages = append(messages, llm.Message{Role: "system", Content: a.buildSystemPrompt()})
+
+	if !a.skipHistory {
+		history, err := a.store.LoadHistory(50)
+		if err != nil {
+			slog.Warn("failed to load history", "error", err)
+		}
+		for _, h := range history {
+			messages = append(messages, llm.Message{Role: h.Role, Content: h.Content})
+		}
+	}
+
+	messages = append(messages, llm.Message{Role: "user", Content: userInput})
+
+	if !a.skipHistory {
+		if err := a.store.SaveMessage("user", userInput); err != nil {
+			slog.Warn("failed to save user message", "error", err)
+		}
+	}
+
+	result, err := a.executeReAct(ctx, messages, a.registry.Definitions())
+	if err != nil {
+		return "", err
+	}
+
+	a.onResponse(result)
+	if !a.skipHistory {
+		if err := a.store.SaveMessage("assistant", result); err != nil {
+			slog.Warn("failed to save assistant message", "error", err)
+		}
+	}
+	return result, nil
+}
+
+// executeReAct runs the core ReAct loop: LLM call → tool execution → repeat.
+// Returns the final text response from the LLM.
+func (a *Agent) executeReAct(ctx context.Context, messages []llm.Message, toolDefs []llm.ToolDefinition) (string, error) {
 	for i := range a.maxIterations {
 		slog.Debug("agent iteration", "iteration", i+1)
 
@@ -117,10 +154,6 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 
 		// No tool calls → final response
 		if len(resp.ToolCalls) == 0 {
-			a.onResponse(resp.Content)
-			if err := a.store.SaveMessage("assistant", resp.Content); err != nil {
-				slog.Warn("failed to save assistant message", "error", err)
-			}
 			return resp.Content, nil
 		}
 
@@ -129,17 +162,12 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 			a.onThinking(resp.Content)
 		}
 
-		// Build assistant message describing what tools were called
-		assistantContent := resp.Content
-		if assistantContent == "" {
-			// Summarize tool calls so the model knows what it did
-			var parts []string
-			for _, tc := range resp.ToolCalls {
-				parts = append(parts, fmt.Sprintf("I'm calling tool %s with args: %s", tc.Name, string(tc.Arguments)))
-			}
-			assistantContent = strings.Join(parts, "\n")
-		}
-		messages = append(messages, llm.Message{Role: "assistant", Content: assistantContent})
+		// Add assistant message with tool_calls preserved
+		messages = append(messages, llm.Message{
+			Role:      "assistant",
+			Content:   resp.Content,
+			ToolCalls: resp.ToolCalls,
+		})
 
 		// Execute each tool call
 		for _, tc := range resp.ToolCalls {
@@ -168,6 +196,32 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 	}
 
 	return "", fmt.Errorf("max iterations (%d) reached", a.maxIterations)
+}
+
+func (a *Agent) buildSystemPrompt() string {
+	prompt := baseSystemPrompt
+
+	// Load user customizations from AGENTS.md
+	if dataDir, err := config.DataDir(); err == nil {
+		if data, err := os.ReadFile(filepath.Join(dataDir, "AGENTS.md")); err == nil {
+			prompt += "\n\n" + string(data)
+		}
+	}
+
+	return prompt
+}
+
+// callLLM makes a single LLM call without tools (for planning, summarization, etc.)
+func (a *Agent) callLLM(ctx context.Context, messages []llm.Message) (string, error) {
+	backend, err := a.router.Select("")
+	if err != nil {
+		return "", fmt.Errorf("select backend: %w", err)
+	}
+	resp, err := a.chatWithRetry(ctx, backend, messages, nil)
+	if err != nil {
+		return "", err
+	}
+	return resp.Content, nil
 }
 
 func (a *Agent) chatWithRetry(ctx context.Context, backend llm.Backend, messages []llm.Message, tools []llm.ToolDefinition) (*llm.Response, error) {

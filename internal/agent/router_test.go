@@ -12,8 +12,8 @@ type mockBackend struct {
 	available bool
 }
 
-func (m *mockBackend) Name() string                         { return m.name }
-func (m *mockBackend) IsAvailable(_ context.Context) bool   { return m.available }
+func (m *mockBackend) Name() string                       { return m.name }
+func (m *mockBackend) IsAvailable(_ context.Context) bool { return m.available }
 func (m *mockBackend) Chat(_ context.Context, _ []llm.Message, _ []llm.ToolDefinition) (*llm.Response, error) {
 	return &llm.Response{Content: "mock response"}, nil
 }

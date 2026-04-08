@@ -55,8 +55,10 @@ func (f *FileRead) Execute(_ context.Context, args json.RawMessage) (string, err
 
 type FileWrite struct{}
 
-func (f *FileWrite) Name() string        { return "file_write" }
-func (f *FileWrite) Description() string { return "Write content to a file. Creates parent directories if needed." }
+func (f *FileWrite) Name() string { return "file_write" }
+func (f *FileWrite) Description() string {
+	return "Write content to a file. Creates parent directories if needed."
+}
 
 func (f *FileWrite) Parameters() map[string]any {
 	return map[string]any{

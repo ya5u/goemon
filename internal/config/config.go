@@ -18,9 +18,9 @@ type AdaptersConfig struct {
 }
 
 type TelegramConfig struct {
-	Enabled      bool     `json:"enabled"`
-	BotTokenEnv  string   `json:"bot_token_env"`
-	AllowedUsers []int64  `json:"allowed_users,omitempty"`
+	Enabled      bool    `json:"enabled"`
+	BotTokenEnv  string  `json:"bot_token_env"`
+	AllowedUsers []int64 `json:"allowed_users,omitempty"`
 }
 
 type LLMConfig struct {
@@ -55,7 +55,7 @@ func Default() *Config {
 			Backends: map[string]BackendConfig{
 				"ollama": {
 					Endpoint: "http://localhost:11434",
-					Model:    "qwen2.5-coder:14b",
+					Model:    "gpt-oss:20b",
 				},
 			},
 			Routing: RoutingConfig{

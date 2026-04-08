@@ -90,6 +90,15 @@ func (t *TelegramAdapter) Start(ctx context.Context, handler Handler) error {
 	}
 }
 
+func (t *TelegramAdapter) Send(ctx context.Context, message string) error {
+	for _, userID := range t.allowedUsers {
+		if err := t.sendMessage(userID, message); err != nil {
+			slog.Error("telegram send failed", "user_id", userID, "error", err)
+		}
+	}
+	return nil
+}
+
 func (t *TelegramAdapter) Stop() error {
 	slog.Info("telegram adapter stopped")
 	return nil

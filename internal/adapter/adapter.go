@@ -15,6 +15,9 @@ type Adapter interface {
 	// The handler function should be called for each incoming user message.
 	Start(ctx context.Context, handler Handler) error
 
+	// Send pushes a message to the adapter's default destination (e.g. allowed users).
+	Send(ctx context.Context, message string) error
+
 	// Stop gracefully shuts down the adapter.
 	Stop() error
 }

@@ -7,6 +7,12 @@ import (
 	"strings"
 )
 
+type InputField struct {
+	Name        string
+	Description string
+	Optional    bool
+}
+
 type SkillInfo struct {
 	Name        string
 	Description string
@@ -14,6 +20,7 @@ type SkillInfo struct {
 	EntryPoint  string
 	Language    string
 	Dir         string
+	Inputs      []InputField
 }
 
 type Manager struct {
@@ -104,6 +111,21 @@ func parseSkillMD(content string, info *SkillInfo) {
 			if info.Language == "" {
 				info.Language = strings.ToLower(trimmed)
 			}
+		case "input":
+			// Parse "field_name: description" or "field_name: (optional) description"
+			name, desc, _ := strings.Cut(trimmed, ":")
+			name = strings.TrimSpace(name)
+			desc = strings.TrimSpace(desc)
+			if name == "" || strings.HasPrefix(name, "(") {
+				continue
+			}
+			field := InputField{Name: name}
+			if strings.HasPrefix(desc, "(optional)") {
+				field.Optional = true
+				desc = strings.TrimSpace(strings.TrimPrefix(desc, "(optional)"))
+			}
+			field.Description = desc
+			info.Inputs = append(info.Inputs, field)
 		}
 	}
 }
