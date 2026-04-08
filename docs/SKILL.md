@@ -2,15 +2,15 @@
 
 ## Overview
 
-スキルは再利用可能な自動化モジュール。bash や python のスクリプトとして実装され、GoEmon のツールとして LLM から直接呼び出せる。
+Skills are reusable automation modules implemented as external scripts (bash, python, etc.). They are automatically registered as LLM tools and dynamically discovered — no restart is needed when adding or removing skills.
 
-## ディレクトリ構造
+## Directory Structure
 
 ```
 ~/.goemon/skills/
 ├── web-search/
-│   ├── SKILL.md      # メタデータ定義（必須）
-│   └── main.py       # エントリポイント
+│   ├── SKILL.md      # Metadata definition (required)
+│   └── main.py       # Entry point script
 ├── claude-code/
 │   ├── SKILL.md
 │   └── main.sh
@@ -19,16 +19,16 @@
     └── main.py
 ```
 
-## SKILL.md フォーマット
+## SKILL.md Format
 
 ```markdown
-# スキル名
+# Skill Name
 
 ## Description
-スキルの説明（1行）。LLM のツール説明文として使用される。
+One-line description. Used as the tool description for the LLM.
 
 ## Trigger
-- manual: "トリガーフレーズ"
+- manual: "trigger phrase"
 
 ## Entry Point
 main.sh
@@ -37,33 +37,33 @@ main.sh
 bash
 
 ## Input
-- field_name: フィールドの説明
-- optional_field: (optional) オプションフィールドの説明
+- field_name: Field description
+- optional_field: (optional) Optional field description
 
 ## Output
-- result_field: 出力フィールドの説明
+- result_field: Output field description
 
 ## Dependencies
-- 必要な外部コマンド
+- required external commands
 ```
 
-### セクション詳細
+### Sections
 
-| セクション | 必須 | 説明 |
-|-----------|------|------|
-| Description | Yes | LLM に渡されるツール説明文 |
-| Trigger | No | 手動/自動トリガーの定義 |
-| Entry Point | Yes | 実行するスクリプトファイル名 |
-| Language | Yes | 実行方法の判定に使用（`bash`, `python` 等） |
-| Input | No | 入力パラメータ定義。LLM のツールパラメータに変換される |
-| Output | No | 出力フォーマットの説明（ドキュメント用） |
-| Dependencies | No | 必要な外部コマンドの一覧（ドキュメント用） |
+| Section      | Required | Description |
+|--------------|----------|-------------|
+| Description  | Yes      | Tool description shown to the LLM |
+| Trigger      | No       | Manual/automatic trigger definitions |
+| Entry Point  | Yes      | Script filename to execute |
+| Language     | Yes      | Determines execution method (`bash`, `python`, etc.) |
+| Input        | No       | Input parameter definitions, converted to JSON Schema for the LLM |
+| Output       | No       | Output format documentation |
+| Dependencies | No       | Required external commands documentation |
 
-## Input パラメータ
+## Input Parameters
 
-`## Input` セクションの各行が LLM ツールの JSON Schema パラメータに変換される。
+Each line in the `## Input` section is parsed into a JSON Schema parameter for the LLM tool definition.
 
-### 記法
+### Syntax
 
 ```markdown
 ## Input
@@ -71,16 +71,16 @@ bash
 - max_results: (optional) Maximum number of results. Default 5.
 ```
 
-### パース規則
+### Parsing Rules
 
-- `- field_name: description` → 必須パラメータ
-- `- field_name: (optional) description` → オプションパラメータ
-- フィールド名はコロンの前、説明はコロンの後
-- `(optional)` で始まる説明文はオプション扱い
+- `- field_name: description` → required parameter
+- `- field_name: (optional) description` → optional parameter
+- Field name is before the colon, description is after
+- Descriptions starting with `(optional)` mark the field as optional
 
-### 生成される JSON Schema
+### Generated JSON Schema
 
-上記の例から以下の JSON Schema が生成され、LLM に渡される:
+The example above produces the following schema, which is sent to the LLM:
 
 ```json
 {
@@ -99,83 +99,83 @@ bash
 }
 ```
 
-## 実行モデル
+## Execution Model
 
-### 入出力
+### I/O
 
-- **入力**: LLM からのパラメータが JSON として stdin に渡される
-- **出力**: stdout に結果を出力（JSON 推奨）
-- **エラー**: stderr はログに記録される
-- **タイムアウト**: 60秒
+- **Input**: LLM parameters are passed as JSON via stdin
+- **Output**: Results written to stdout (JSON recommended)
+- **Errors**: stderr is logged
+- **Timeout**: 60 seconds
 
-### 実行方法
+### Execution Method
 
-Language フィールドに基づいて実行方法が決まる:
+Determined by the Language field:
 
-| Language | 実行コマンド |
-|----------|-------------|
-| `bash`, `sh` | `bash <entry_point>` |
+| Language           | Command                  |
+|--------------------|--------------------------|
+| `bash`, `sh`       | `bash <entry_point>`     |
 | `python`, `python3` | `python3 <entry_point>` |
-| その他 | `<entry_point>`（直接実行） |
+| Other              | `./<entry_point>` (direct execution) |
 
-## LLM ツールとしての登録
+## LLM Tool Registration
 
-スキルは GoEmon 起動時に自動的に LLM ツールとして登録される。
+Skills are automatically registered as LLM tools at runtime.
 
-- ツール名: `skill_<スキル名>`（例: `skill_web-search`）
-- 説明文: SKILL.md の Description セクション
-- パラメータ: SKILL.md の Input セクションから自動生成
+- Tool name: `skill_<skill-name>` (e.g., `skill_web-search`)
+- Description: from the `## Description` section
+- Parameters: auto-generated from the `## Input` section
 
-### 動的発見
+### Dynamic Discovery
 
-スキルは `ToolProvider` インターフェースを通じて動的に発見される。GoEmon の実行中にスキルを追加・削除しても、次の LLM 呼び出しから反映される（再起動不要）。
+Skills are discovered via the `ToolProvider` interface. The skills directory is scanned on each LLM call, so adding or removing a skill directory takes effect immediately without restarting GoEmon.
 
-## 標準スキル
+## Standard Skills
 
-`goemon init` で `~/.goemon/skills/` に展開される。ソースは `templates/skills/` にあり、バイナリに埋め込まれている。
+Extracted to `~/.goemon/skills/` on `goemon init`. Source is embedded in the binary from `templates/skills/`.
 
-| スキル | 説明 |
-|--------|------|
-| `web-search` | DuckDuckGo で Web 検索。API キー不要 |
-| `claude-code` | 複雑なコーディングタスクを Claude Code CLI に委譲 |
-| `github-pr` | GitHub リポジトリに PR を作成 |
-| `hello-world` | 最小限のサンプルスキル |
+| Skill        | Description |
+|--------------|-------------|
+| `web-search` | Search the web via DuckDuckGo. No API key required |
+| `claude-code`| Delegate complex coding tasks to Claude Code CLI |
+| `github-pr`  | Create pull requests on GitHub repositories |
+| `hello-world`| Minimal example skill |
 
-## CLI コマンド
+## CLI Commands
 
 ```bash
-goemon skill list                    # スキル一覧
-goemon skill run <name> [input-json] # スキル実行
-goemon skill install <github-url>    # GitHub からインストール
-goemon skill remove <name>           # 削除
+goemon skill list                    # List skills
+goemon skill run <name> [input-json] # Run a skill
+goemon skill install <github-url>    # Install from GitHub
+goemon skill remove <name>           # Remove a skill
 ```
 
-## 実行ログ
+## Execution Logs
 
-スキルの実行結果は SQLite の `skill_runs` テーブルに記録される。
+Skill runs are logged to the `skill_runs` table in SQLite.
 
-| カラム | 説明 |
-|--------|------|
-| `skill_name` | スキル名 |
-| `input` | 入力 JSON |
-| `output` | 出力 |
-| `success` | 成功/失敗 |
-| `error_message` | エラーメッセージ |
-| `duration_ms` | 実行時間（ミリ秒） |
+| Column         | Description |
+|----------------|-------------|
+| `skill_name`   | Skill name |
+| `input`        | Input JSON |
+| `output`       | Output |
+| `success`      | Success/failure |
+| `error_message`| Error message |
+| `duration_ms`  | Execution time in milliseconds |
 
-## スキルの作成
+## Creating Skills
 
-### 手動作成
+### Manual
 
-1. `~/.goemon/skills/<name>/` ディレクトリを作成
-2. `SKILL.md` を作成（上記フォーマットに従う）
-3. エントリポイントスクリプトを作成
-4. 再起動不要で即座に利用可能
+1. Create a directory under `~/.goemon/skills/<name>/`
+2. Add a `SKILL.md` following the format above
+3. Add an entry point script
+4. The skill is available immediately (no restart needed)
 
-### GitHub からインストール
+### From GitHub
 
 ```bash
 goemon skill install https://github.com/user/repo
 ```
 
-リポジトリが `~/.goemon/skills/<repo-name>/` にクローンされる。`SKILL.md` が含まれている必要がある。
+The repository is cloned to `~/.goemon/skills/<repo-name>/`. It must contain a `SKILL.md`.

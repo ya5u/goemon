@@ -2,17 +2,17 @@
 
 ## Overview
 
-ワークフローはマルチステップの自動化タスクを定義・実行する仕組み。cron スケジュールで定期実行したり、CLI から手動実行できる。
+Workflows are multi-step automation tasks that can be scheduled via cron or run manually from the CLI. Each step is either a **prompt** (executed by the LLM with tools) or a **script** (executed directly as a shell/python script).
 
-各ステップは **prompt**（LLM で実行）か **script**（シェルスクリプト/Python で実行）のいずれかで、ステップ間の状態はファイルベースの共有ワークスペースで引き継がれる。
+A shared workspace directory is created for each run, enabling reliable state passing between steps via files.
 
-## ディレクトリ構造
+## Directory Structure
 
 ```
 ~/.goemon/workflows/
 └── ai-news-digest/
-    ├── workflow.yaml    # ワークフロー定義（必須）
-    ├── search.sh        # スクリプトステップ
+    ├── workflow.yaml    # Workflow definition (required)
+    ├── search.sh        # Script steps
     ├── fetch.sh
     ├── generate.sh
     └── publish.sh
@@ -20,12 +20,12 @@
 
 ## workflow.yaml
 
-YAML 形式でワークフローを定義する。
+Workflows are defined in YAML format.
 
 ```yaml
 name: AI News Digest
-schedule: "0 8 * * *"    # cron式（分 時 日 月 曜日）
-notify: telegram          # 完了通知先（省略可）
+schedule: "0 8 * * *"    # cron (minute hour day month weekday)
+notify: telegram          # notification target (optional)
 
 steps:
   - name: search
@@ -35,135 +35,131 @@ steps:
   - name: generate
     type: prompt
     prompt: |
-      以下のデータを元に記事を生成してください。
-      ...
+      Generate an article based on the following data...
 
   - name: publish
     type: script
     entry_point: publish.sh
 ```
 
-### フィールド
+### Top-level Fields
 
-| フィールド | 必須 | 説明 |
-|-----------|------|------|
-| `name` | Yes | ワークフロー名 |
-| `schedule` | Yes | cron 式（5フィールド: 分 時 日 月 曜日） |
-| `notify` | No | 完了時の通知先 adapter 名（`telegram` 等） |
-| `steps` | Yes | ステップの配列（1つ以上） |
+| Field      | Required | Description |
+|------------|----------|-------------|
+| `name`     | Yes      | Workflow name |
+| `schedule` | Yes      | Cron expression (5 fields: minute hour day month weekday) |
+| `notify`   | No       | Adapter name to notify on completion (e.g. `telegram`) |
+| `steps`    | Yes      | Array of steps (at least one) |
 
-### ステップ定義
+### Step Fields
 
-各ステップは以下のフィールドを持つ。
+| Field         | Required        | Description |
+|---------------|-----------------|-------------|
+| `name`        | Yes             | Step name (used in logs and output filenames) |
+| `type`        | Yes             | `prompt` or `script` |
+| `prompt`      | If type=prompt  | Prompt text sent to the LLM |
+| `entry_point` | If type=script  | Script filename to execute |
 
-| フィールド | 必須 | 説明 |
-|-----------|------|------|
-| `name` | Yes | ステップ名（ログやファイル名に使用） |
-| `type` | Yes | `prompt` または `script` |
-| `prompt` | type=prompt のとき | LLM に渡すプロンプト |
-| `entry_point` | type=script のとき | 実行するスクリプトファイル名 |
+## Step Types
 
-## ステップの種類
+### prompt
 
-### prompt ステップ
+Executes the step via the LLM (ReAct loop) with access to all registered tools.
 
-LLM（ReAct ループ）でステップを実行する。ツール呼び出しが可能。
+- The previous step's stdout is prepended as `Previous step result:` in the prompt
+- Does **not** save to conversation history (isolated from chat)
 
-- 前ステップの stdout が `Previous step result:` として prompt に付加される
-- 会話履歴には保存されない（`RunWithoutHistory`）
+### script
 
-### script ステップ
+Executes a shell script or Python script directly.
 
-シェルスクリプトまたは Python スクリプトを直接実行する。
+- Execution method is determined by file extension (`.sh` → bash, `.py` → python3)
+- Timeout: 5 minutes
+- The previous step's stdout is passed via stdin
+- stdout becomes input for the next step
 
-- 拡張子に基づいて実行方法を自動判定（`.sh` → bash、`.py` → python3）
-- タイムアウト: 5分
-- 前ステップの stdout が stdin に渡される
-- stdout が次ステップへの入力となる
+## Workspace
 
-## ワークスペース
+A temporary workspace directory is created for each workflow run, enabling reliable file-based state passing between steps.
 
-各ワークフロー実行ごとに一時ディレクトリ（ワークスペース）が自動作成される。
+### Environment Variables
 
-### 環境変数
+The following environment variables are set for script steps:
 
-script ステップには以下の環境変数が設定される。
+| Variable             | Description |
+|----------------------|-------------|
+| `GOEMON_WORKSPACE`   | Absolute path to the workspace directory |
+| `GOEMON_PREV_RESULT` | Path to the previous step's output file |
 
-| 変数 | 説明 |
-|------|------|
-| `GOEMON_WORKSPACE` | ワークスペースディレクトリの絶対パス |
-| `GOEMON_PREV_RESULT` | 前ステップの出力ファイルパス |
+### Passing State Between Steps
 
-### ステップ間のデータ受け渡し
+There are two ways to pass data between steps:
 
-ステップ間でデータを受け渡す方法は2つある。
+1. **stdin/stdout** (simple) — Previous step's stdout is passed as the next step's stdin
+2. **Workspace files** (recommended) — Write files to `$GOEMON_WORKSPACE` and read them in subsequent steps
 
-1. **stdin/stdout**（簡易）— 前ステップの stdout が次ステップの stdin に渡される
-2. **ワークスペースファイル**（推奨）— `$GOEMON_WORKSPACE` にファイルを保存し、後続ステップで読む
-
-ワークスペースファイルを使う方が、データ量が多い場合やバイナリデータの受け渡しに適している。
+Workspace files are more reliable for large data or structured data.
 
 ```bash
-# search.sh — ワークスペースにファイル保存
+# search.sh — save to workspace
 echo "${RESULTS}" > "${GOEMON_WORKSPACE}/search_results.json"
 
-# fetch.sh — ワークスペースからファイル読み込み
-RESULTS="${GOEMON_WORKSPACE}/search_results.json"
-cat "${RESULTS}" | python3 process.py
+# fetch.sh — read from workspace
+cat "${GOEMON_WORKSPACE}/search_results.json" | python3 process.py
 ```
 
-### ライフサイクル
+### Lifecycle
 
-- ワークフロー実行開始時に作成
-- 各ステップの出力は `step_N_<name>.txt` として自動保存
-- ワークフロー実行完了後に自動削除
+- Created at workflow run start
+- Each step's output is automatically saved as `step_N_<name>.txt`
+- Automatically deleted after workflow completion
 
-## 実行方法
+## Running Workflows
 
-### 手動実行
+### Manual Execution
 
 ```bash
 goemon workflow run <name>
 ```
 
-### スケジュール実行
+### Scheduled Execution
 
-`goemon serve` を起動すると、スケジューラが毎分ワークフローをスキャンし、cron 式にマッチしたものを自動実行する。
+When `goemon serve` is running, the scheduler checks workflows every minute and runs those matching their cron schedule.
 
-- 同じワークフローの重複実行は防止される
-- ワークフローの追加・変更は `~/.goemon/workflows/` にファイルを置くだけで反映（再起動不要）
+- Duplicate runs of the same workflow are prevented
+- Adding or modifying workflows in `~/.goemon/workflows/` takes effect without restart
 
-### 一覧表示
+### Listing Workflows
 
 ```bash
 goemon workflow list
 ```
 
-## 実行ログ
+## Execution Logs
 
-各ステップの実行結果は SQLite の `workflow_runs` テーブルに記録される。
+Each step's result is logged to the `workflow_runs` table in SQLite.
 
-| カラム | 説明 |
-|--------|------|
-| `workflow_name` | ワークフロー名 |
-| `step_name` | ステップ名 |
-| `step_type` | `prompt` or `script` |
-| `input` | ステップへの入力 |
-| `output` | ステップの出力 |
-| `success` | 成功/失敗 |
-| `error_message` | エラーメッセージ（失敗時） |
-| `duration_ms` | 実行時間（ミリ秒） |
-| `created_at` | 実行日時 |
+| Column          | Description |
+|-----------------|-------------|
+| `workflow_name` | Workflow name |
+| `step_name`     | Step name |
+| `step_type`     | `prompt` or `script` |
+| `input`         | Step input |
+| `output`        | Step output |
+| `success`       | Success/failure |
+| `error_message` | Error message (on failure) |
+| `duration_ms`   | Execution time in milliseconds |
+| `created_at`    | Execution timestamp |
 
-## 通知
+## Notifications
 
-`notify` フィールドに adapter 名を指定すると、ワークフロー完了時に結果が通知される。現在対応している adapter:
+When `notify` is set to an adapter name, the final step's result is sent via that adapter on completion. Currently supported:
 
-- `telegram` — 設定済みの allowed_users 全員に送信
+- `telegram` — Sends to all configured `allowed_users`
 
-## 設計指針
+## Design Guidelines
 
-- **確実に実行したい処理は script ステップにする** — git 操作、ファイル書き出し、API 呼び出し等
-- **LLM の判断が必要な処理は prompt ステップにする** — テキスト生成、分析、判断等
-- **ステップ間のデータはワークスペースファイルで渡す** — stdin/stdout だけに頼らない
-- **各ステップは独立して理解可能にする** — 1ステップ = 1責務
+- **Use script steps for deterministic operations** — git operations, file I/O, API calls, cleanup
+- **Use prompt steps for tasks requiring LLM judgment** — text generation, analysis, decision-making
+- **Pass state via workspace files** — don't rely solely on stdin/stdout
+- **Keep each step focused** — one step = one responsibility
