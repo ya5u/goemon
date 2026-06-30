@@ -7,22 +7,27 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/ya5u/goemon/internal/memory"
+	"github.com/ya5u/goemon/internal/usermemory"
 )
 
-// Memory is a unified tool that combines store and recall operations.
-
+// Memory is the agent's long-term memory tool. It stores durable facts about
+// the user as human-readable Markdown files (see internal/usermemory).
 type Memory struct {
-	store *memory.Store
+	mgr *usermemory.Manager
 }
 
-func NewMemory(store *memory.Store) *Memory {
-	return &Memory{store: store}
+func NewMemory(mgr *usermemory.Manager) *Memory {
+	return &Memory{mgr: mgr}
 }
 
 func (m *Memory) Name() string { return "memory" }
+
 func (m *Memory) Description() string {
-	return "Store or recall key-value pairs in persistent memory. Use action 'store' to save, 'recall' to retrieve."
+	return "Long-term memory of durable facts about the user. " +
+		"Use 'save' to remember something worth keeping across sessions (a preference, a recurring task and how it was done, feedback the user gave, a pattern in their requests). " +
+		"Use 'read' to load the full text of a memory listed in the memory index. " +
+		"Use 'list' to see all memories, 'delete' to remove one that is wrong or obsolete. " +
+		"Each memory is one fact. Before saving, check the index for an existing memory on the same topic and update it instead of duplicating."
 }
 
 func (m *Memory) Parameters() map[string]any {
@@ -31,56 +36,95 @@ func (m *Memory) Parameters() map[string]any {
 		"properties": map[string]any{
 			"action": map[string]any{
 				"type":        "string",
-				"enum":        []string{"store", "recall"},
-				"description": "Action to perform: 'store' or 'recall'",
+				"enum":        []string{"save", "read", "list", "delete"},
+				"description": "save | read | list | delete",
 			},
-			"key": map[string]any{
+			"name": map[string]any{
 				"type":        "string",
-				"description": "Key to store under or search for",
+				"description": "Short kebab-case slug identifying the memory (required for save/read/delete). E.g. 'prefers-japanese-responses'.",
 			},
-			"value": map[string]any{
+			"type": map[string]any{
 				"type":        "string",
-				"description": "Value to store (required for 'store' action)",
+				"enum":        []string{"user", "feedback", "task", "reference"},
+				"description": "Memory category (for save): user=identity/preferences, feedback=guidance/corrections, task=recurring task and how to do it, reference=external pointer.",
+			},
+			"description": map[string]any{
+				"type":        "string",
+				"description": "One-line summary shown in the memory index (for save).",
+			},
+			"content": map[string]any{
+				"type":        "string",
+				"description": "The full fact in Markdown (for save). For feedback/task, include why it matters and how to apply it.",
 			},
 		},
-		"required": []string{"action", "key"},
+		"required": []string{"action"},
 	}
 }
 
 func (m *Memory) Execute(_ context.Context, args json.RawMessage) (string, error) {
-	var params struct {
-		Action string `json:"action"`
-		Key    string `json:"key"`
-		Value  string `json:"value"`
+	var p struct {
+		Action      string `json:"action"`
+		Name        string `json:"name"`
+		Type        string `json:"type"`
+		Description string `json:"description"`
+		Content     string `json:"content"`
 	}
-	if err := json.Unmarshal(args, &params); err != nil {
+	if err := json.Unmarshal(args, &p); err != nil {
 		return "", fmt.Errorf("parse args: %w", err)
 	}
 
-	switch params.Action {
-	case "store":
-		slog.Info("memory store", "key", params.Key)
-		if err := m.store.Store(params.Key, params.Value); err != nil {
+	switch p.Action {
+	case "save":
+		if p.Name == "" {
+			return "", fmt.Errorf("'name' is required for save")
+		}
+		slog.Info("memory save", "name", p.Name, "type", p.Type)
+		if err := m.mgr.Save(usermemory.Entry{
+			Name:        p.Name,
+			Type:        p.Type,
+			Description: p.Description,
+			Content:     p.Content,
+		}); err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("Stored key %q", params.Key), nil
+		return fmt.Sprintf("Saved memory %q.", usermemory.Slug(p.Name)), nil
 
-	case "recall":
-		slog.Info("memory recall", "key", params.Key)
-		results, err := m.store.Recall(params.Key)
+	case "read":
+		if p.Name == "" {
+			return "", fmt.Errorf("'name' is required for read")
+		}
+		slog.Info("memory read", "name", p.Name)
+		e, err := m.mgr.Get(p.Name)
+		if err != nil {
+			return "No such memory.", nil
+		}
+		return fmt.Sprintf("# %s (%s)\n%s\n\n%s", e.Name, e.Type, e.Description, e.Content), nil
+
+	case "list":
+		entries, err := m.mgr.List()
 		if err != nil {
 			return "", err
 		}
-		if len(results) == 0 {
-			return "No matching memories found.", nil
+		if len(entries) == 0 {
+			return "No memories yet.", nil
 		}
 		var sb strings.Builder
-		for _, r := range results {
-			fmt.Fprintf(&sb, "%s: %s\n", r.Key, r.Value)
+		for _, e := range entries {
+			fmt.Fprintf(&sb, "- %s (%s): %s\n", e.Name, e.Type, e.Description)
 		}
 		return sb.String(), nil
 
+	case "delete":
+		if p.Name == "" {
+			return "", fmt.Errorf("'name' is required for delete")
+		}
+		slog.Info("memory delete", "name", p.Name)
+		if err := m.mgr.Delete(p.Name); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("Deleted memory %q.", usermemory.Slug(p.Name)), nil
+
 	default:
-		return "", fmt.Errorf("unknown action: %s (use 'store' or 'recall')", params.Action)
+		return "", fmt.Errorf("unknown action: %s (use save|read|list|delete)", p.Action)
 	}
 }

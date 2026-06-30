@@ -13,9 +13,18 @@ import (
 	"github.com/ya5u/goemon/internal/llm"
 	"github.com/ya5u/goemon/internal/memory"
 	"github.com/ya5u/goemon/internal/tool"
+	"github.com/ya5u/goemon/internal/usermemory"
 )
 
 const baseSystemPrompt = `You have access to tools. Only call tools when the user's request requires an action. For conversation or questions you can answer from knowledge, respond directly without tools.`
+
+// memoryProtocol tells the agent how to use its long-term memory. It is added
+// to the system prompt alongside the memory index.
+const memoryProtocol = `You keep a long-term memory of durable facts about the user, managed with the ` + "`memory`" + ` tool. Use it to grow more helpful over time:
+- When an index entry below looks relevant to the current request, call ` + "`memory`" + ` with action "read" to load its full content before acting.
+- When you learn something durable — a stated preference, feedback or a correction, a recurring task and how it should be done, or a pattern in what and when the user asks — call ` + "`memory`" + ` with action "save". Keep each memory to a single fact.
+- Before saving, check the index for an existing memory on the same topic and update it instead of creating a duplicate. Delete a memory once it is clearly wrong.
+- Do not save secrets, one-off chatter, or things already obvious from the conversation.`
 
 type Agent struct {
 	router        *Router
@@ -201,10 +210,18 @@ func (a *Agent) executeReAct(ctx context.Context, messages []llm.Message, toolDe
 func (a *Agent) buildSystemPrompt() string {
 	prompt := baseSystemPrompt
 
-	// Load user customizations from AGENTS.md
 	if dataDir, err := config.DataDir(); err == nil {
+		// Load user customizations from AGENTS.md
 		if data, err := os.ReadFile(filepath.Join(dataDir, "AGENTS.md")); err == nil {
 			prompt += "\n\n" + string(data)
+		}
+
+		// Inject the long-term memory index. The agent always sees what it
+		// knows about the user; it reads a full memory via the `memory` tool
+		// when an index entry is relevant, and saves new durable facts there.
+		mgr := usermemory.NewManager(filepath.Join(dataDir, "memory"))
+		if idx, err := mgr.IndexText(); err == nil && idx != "" {
+			prompt += "\n\n" + memoryProtocol + "\n\n# Memory index (facts you know about the user)\n\n" + idx
 		}
 	}
 

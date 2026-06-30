@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ya5u/goemon/internal/memory"
+	"github.com/ya5u/goemon/internal/usermemory"
 )
 
 func TestRegistry(t *testing.T) {
@@ -66,40 +66,45 @@ func TestFileReadWrite(t *testing.T) {
 }
 
 func TestMemoryTools(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-	store, err := memory.New(dbPath)
+	m := NewMemory(usermemory.NewManager(filepath.Join(t.TempDir(), "memory")))
+
+	// Save
+	result, err := m.Execute(context.Background(), json.RawMessage(`{"action":"save","name":"Prefers Japanese","type":"user","description":"Wants replies in Japanese","content":"Always respond in Japanese."}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	if !strings.Contains(result, "prefers-japanese") {
+		t.Errorf("unexpected save result: %s", result)
+	}
 
-	m := NewMemory(store)
-
-	// Store
-	result, err := m.Execute(context.Background(), json.RawMessage(`{"action":"store","key":"test.key","value":"test value"}`))
+	// List
+	result, err = m.Execute(context.Background(), json.RawMessage(`{"action":"list"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result, "test.key") {
-		t.Errorf("unexpected store result: %s", result)
+	if !strings.Contains(result, "prefers-japanese") || !strings.Contains(result, "Wants replies in Japanese") {
+		t.Errorf("unexpected list result: %s", result)
 	}
 
-	// Recall
-	result, err = m.Execute(context.Background(), json.RawMessage(`{"action":"recall","key":"test"}`))
+	// Read (slug is normalized from the original name)
+	result, err = m.Execute(context.Background(), json.RawMessage(`{"action":"read","name":"prefers-japanese"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result, "test value") {
-		t.Errorf("expected 'test value' in result, got: %s", result)
+	if !strings.Contains(result, "Always respond in Japanese.") {
+		t.Errorf("expected body in read result, got: %s", result)
 	}
 
-	// Recall no match
-	result, err = m.Execute(context.Background(), json.RawMessage(`{"action":"recall","key":"nonexistent"}`))
+	// Delete
+	if _, err = m.Execute(context.Background(), json.RawMessage(`{"action":"delete","name":"prefers-japanese"}`)); err != nil {
+		t.Fatal(err)
+	}
+	result, err = m.Execute(context.Background(), json.RawMessage(`{"action":"list"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result, "No matching") {
-		t.Errorf("expected no match message, got: %s", result)
+	if !strings.Contains(result, "No memories yet") {
+		t.Errorf("expected empty after delete, got: %s", result)
 	}
 }
 

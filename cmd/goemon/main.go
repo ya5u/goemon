@@ -19,6 +19,7 @@ import (
 	"github.com/ya5u/goemon/internal/memory"
 	"github.com/ya5u/goemon/internal/skill"
 	"github.com/ya5u/goemon/internal/tool"
+	"github.com/ya5u/goemon/internal/usermemory"
 	"github.com/ya5u/goemon/internal/workflow"
 	"github.com/ya5u/goemon/templates"
 )
@@ -79,6 +80,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
+	case "memory":
+		if err := runMemory(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", os.Args[1])
 		printUsage()
@@ -99,6 +105,7 @@ Commands:
   serve      Start enabled adapters (Telegram, etc.)
   skill      Manage skills (list)
   workflow   Manage workflows (list, run)
+  memory     Manage long-term memory (list, show)
   version    Show version
 `)
 }
@@ -109,7 +116,7 @@ func runInit() error {
 		return err
 	}
 
-	for _, dir := range []string{"skills", "workflows"} {
+	for _, dir := range []string{"skills", "workflows", "memory"} {
 		if err := os.MkdirAll(filepath.Join(dataDir, dir), 0755); err != nil {
 			return err
 		}
@@ -186,8 +193,15 @@ func extractStandardSkills(skillsDir string) error {
 func setupAgent(cfg *config.Config, store *memory.Store) (*agent.Agent, *agent.Router) {
 	backends := make(map[string]llm.Backend)
 
-	if bc, ok := cfg.LLM.Backends["ollama"]; ok {
-		backends["ollama"] = llm.NewOllama(bc.Endpoint, bc.Model)
+	for name, bc := range cfg.LLM.Backends {
+		switch name {
+		case "ollama":
+			backends[name] = llm.NewOllama(bc.Endpoint, bc.Model)
+		case "openrouter":
+			backends[name] = llm.NewOpenRouter(bc.Endpoint, bc.Model, os.Getenv(bc.APIKeyEnv))
+		default:
+			slog.Warn("unknown LLM backend, skipping", "name", name)
+		}
 	}
 
 	router := agent.NewRouter(agent.RouterConfig{
@@ -203,7 +217,9 @@ func setupAgent(cfg *config.Config, store *memory.Store) (*agent.Agent, *agent.R
 	registry.Register(&tool.FileEdit{})
 	registry.Register(&tool.FileWrite{})
 	registry.Register(tool.NewWebFetch())
-	registry.Register(tool.NewMemory(store))
+	if dataDir, err := config.DataDir(); err == nil {
+		registry.Register(tool.NewMemory(usermemory.NewManager(filepath.Join(dataDir, "memory"))))
+	}
 
 	callbacks := agent.WithCallbacks(
 		func(text string) {
@@ -505,6 +521,51 @@ func runWorkflow(args []string) error {
 	return nil
 }
 
+func runMemory(args []string) error {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, `Usage:
+  goemon memory list
+  goemon memory show <name>
+`)
+		return nil
+	}
+
+	dataDir, err := config.DataDir()
+	if err != nil {
+		return err
+	}
+	mgr := usermemory.NewManager(filepath.Join(dataDir, "memory"))
+
+	switch args[0] {
+	case "list":
+		entries, err := mgr.List()
+		if err != nil {
+			return err
+		}
+		if len(entries) == 0 {
+			fmt.Println("No memories yet.")
+			return nil
+		}
+		for _, e := range entries {
+			fmt.Printf("  %s (%s) — %s\n", e.Name, e.Type, e.Description)
+		}
+
+	case "show":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: goemon memory show <name>")
+		}
+		e, err := mgr.Get(args[1])
+		if err != nil {
+			return err
+		}
+		fmt.Printf("# %s (%s)\n%s\n\n%s\n", e.Name, e.Type, e.Description, e.Content)
+
+	default:
+		return fmt.Errorf("unknown memory command: %s", args[0])
+	}
+	return nil
+}
+
 func handleSlashCommand(input string, _ *agent.Agent) bool {
 	cmd := strings.Fields(input)[0]
 	switch cmd {
@@ -516,7 +577,7 @@ func handleSlashCommand(input string, _ *agent.Agent) bool {
 	case "/skills":
 		fmt.Println("Use: goemon skill list")
 	case "/memory":
-		fmt.Println("memory commands: not yet implemented")
+		fmt.Println("Use: goemon memory list | goemon memory show <name>")
 	case "/config":
 		cfg, err := config.Load()
 		if err != nil {

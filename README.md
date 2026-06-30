@@ -1,6 +1,6 @@
 # GoEmon
 
-GoEmon is a personal AI agent written in Go. It runs on a Raspberry Pi or any Linux/macOS machine and uses [Ollama](https://ollama.com/) as its LLM backend. Complex multi-step tasks are composed from reusable **skills** (instruction packages) and run as scheduled **workflows**.
+GoEmon is a personal AI agent written in Go. It runs on a Raspberry Pi or any Linux/macOS machine. Its default LLM backend is DeepSeek V4 Flash via [OpenRouter](https://openrouter.ai/), with a local [Ollama](https://ollama.com/) instance as a configurable fallback. Complex multi-step tasks are composed from reusable **skills** (instruction packages) and run as scheduled **workflows**.
 
 **Name origin:** Go (the language) + 右衛門 (emon, Japanese name suffix) = GoEmon. Also a reference to Goemon Ishikawa, the legendary thief who operates autonomously in the shadows. And yes, inspired by a certain blue robotic cat from the future.
 
@@ -17,7 +17,8 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
 ## Requirements
 
 - Go 1.26+
-- An Ollama instance (local or on LAN)
+- An [OpenRouter](https://openrouter.ai/) API key (default backend), exported as `OPENROUTER_API_KEY`
+- Optionally, an Ollama instance (local or on LAN) for the fallback backend
 - SQLite is embedded via [modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite) — no CGO required
 
 ## Quick Start
@@ -29,7 +30,10 @@ make build
 # Initialize config, data directory, and standard skills
 ./bin/goemon init
 
-# Edit ~/.goemon/config.json to set your Ollama endpoint
+# Export your OpenRouter API key (default backend)
+export OPENROUTER_API_KEY=sk-or-...
+
+# Optionally edit ~/.goemon/config.json (model, Ollama fallback endpoint, etc.)
 
 # Start interactive chat
 ./bin/goemon chat
@@ -51,6 +55,9 @@ goemon skill list                # List installed skills
 
 goemon workflow list             # List workflows
 goemon workflow run <name>       # Run a workflow manually
+
+goemon memory list               # List long-term memories
+goemon memory show <name>        # Show one memory's full content
 ```
 
 ### Chat Slash Commands
@@ -72,7 +79,7 @@ goemon workflow run <name>       # Run a workflow manually
 | `file_edit`    | Replace a string in a file         |
 | `file_write`   | Write content to file              |
 | `web_fetch`    | HTTP GET with HTML tag stripping   |
-| `memory`       | Store/recall key-value pairs in SQLite |
+| `memory`       | Save/read/list/delete long-term memories about the user (see [Memory](#memory)) |
 
 ## Skills
 
@@ -111,6 +118,22 @@ See [docs/WORKFLOW.md](docs/WORKFLOW.md) for the full specification.
 
 `~/.goemon/AGENTS.md` customizes the agent's system prompt — personality, behavior rules, response style, etc. This file is loaded on every LLM call, so changes take effect immediately without restart.
 
+## Memory
+
+GoEmon keeps a long-term memory of durable facts about you, so it grows more helpful over time. This is separate from the SQLite conversation history: memories are distilled, human-readable Markdown files you can read, edit, or delete by hand.
+
+```
+~/.goemon/memory/
+├── MEMORY.md                       # auto-generated index (one line per memory)
+├── prefers-japanese-responses.md
+├── feedback-verify-before-asserting.md
+└── task-weekly-ai-digest.md
+```
+
+Each file is a single fact with frontmatter (`name`, `description`, `type`) plus a Markdown body. Memory types: `user` (identity/preferences), `feedback` (guidance/corrections), `task` (a recurring task and how it was done, or a pattern in your requests), and `reference` (external pointers).
+
+The agent manages memory itself through the `memory` tool: the index (`MEMORY.md`) is injected into the system prompt on every call, so the agent always knows what it has learned; it reads a full memory when an index entry is relevant, and saves new memories when you give feedback or finish a notable task. Inspect them with `goemon memory list` / `goemon memory show <name>`.
+
 ## Configuration
 
 Config lives at `~/.goemon/config.json`.
@@ -119,9 +142,14 @@ Config lives at `~/.goemon/config.json`.
 {
   "llm": {
     "backends": {
+      "openrouter": {
+        "endpoint": "https://openrouter.ai/api/v1",
+        "model": "deepseek/deepseek-v4-flash",
+        "api_key_env": "OPENROUTER_API_KEY"
+      },
       "ollama": { "endpoint": "http://localhost:11434", "model": "gpt-oss:20b" }
     },
-    "routing": { "default": "ollama" }
+    "routing": { "default": "openrouter", "fallback": "ollama" }
   },
   "agent": { "max_iterations": 10 },
   "adapters": {

@@ -56,7 +56,7 @@ Built-in capabilities compiled into the GoEmon binary.
 | `file_edit`  | Replace a string in a file               |
 | `file_write` | Write content to file                    |
 | `web_fetch`  | HTTP GET with script/style/tag stripping |
-| `memory`     | Store/recall key-value pairs in SQLite   |
+| `memory`     | Save/read/list/delete long-term memories (file-based; see below) |
 
 ### Skills
 
@@ -97,17 +97,39 @@ See [WORKFLOW.md](WORKFLOW.md) for the full specification.
 
 ## LLM Backend
 
-GoEmon uses a local Ollama instance as its LLM backend. Complex coding tasks are handled by the `executing-coding-tasks` skill, which drives the agent's built-in tools rather than calling out to a cloud API.
+GoEmon supports multiple LLM backends, selected per call by the router:
+
+- **`openrouter`** (default) — DeepSeek V4 Flash (`deepseek/deepseek-v4-flash`) via [OpenRouter](https://openrouter.ai/)'s OpenAI-compatible API. Requires an API key from the env var named by `api_key_env` (default `OPENROUTER_API_KEY`). The same backend works with any OpenAI-compatible endpoint.
+- **`ollama`** (fallback) — A local or LAN Ollama instance, using its native API.
+
+Backends are constructed in `setupAgent` from the `llm.backends` config map and registered with the router by name.
 
 ### Router
 
 The LLM router selects which backend to use:
 
-1. Default backend available → use it (typically Ollama)
-2. Default unavailable → fallback (if configured)
+1. Default backend available → use it (typically OpenRouter)
+2. Default unavailable → fallback (if configured, typically Ollama)
 3. Nothing available → error
 
 A background goroutine runs periodic health checks (configurable interval).
+
+## Memory
+
+GoEmon has two distinct memory systems, kept separate on purpose:
+
+- **Conversation history** — verbatim chat log in SQLite (`conversations`), windowed to the last 50 messages and replayed into context each turn. High-volume, ephemeral.
+- **Long-term memory** — distilled, durable facts about the user, stored as human-readable Markdown files under `~/.goemon/memory/` (one fact per file). Low-volume, persistent, hand-editable.
+
+Long-term memory is implemented in `internal/usermemory` (separate from `internal/memory`, the SQLite store). Each memory file has frontmatter (`name`, `description`, `type`) and a Markdown body; types are `user`, `feedback`, `task`, and `reference`. A regenerated index, `MEMORY.md`, lists one line per memory.
+
+Flow:
+
+1. **Inject** — `buildSystemPrompt()` appends the memory index (and a usage protocol) to every system prompt, so the agent always knows what it has learned.
+2. **Read** — when an index entry is relevant, the agent calls the `memory` tool (`read`) to load that memory's full body.
+3. **Write** — the agent calls the `memory` tool (`save`) when it learns something durable (a preference, feedback, a recurring task, a request pattern), and `delete` to drop obsolete facts. Writes regenerate `MEMORY.md`.
+
+This is tool-driven: the model decides what is worth remembering, guided by the protocol in the system prompt. (A future batch "reflection" pass over `conversations` could supplement it.)
 
 ## Data
 
@@ -117,7 +139,10 @@ All user data lives in `~/.goemon/`:
 ~/.goemon/
 ├── config.json      # User configuration
 ├── AGENTS.md        # System prompt customization
-├── memory.db        # SQLite: conversations, KV memory, skill/workflow logs
+├── memory.db        # SQLite: conversation history + run logs
+├── memory/          # Long-term memory (Markdown, one fact per file)
+│   ├── MEMORY.md    # auto-generated index
+│   └── *.md
 ├── skills/          # Installed skills (standard + user)
 │   ├── searching-the-web/
 │   │   └── SKILL.md
@@ -135,7 +160,7 @@ All user data lives in `~/.goemon/`:
 | Table              | Purpose                                      |
 |--------------------|----------------------------------------------|
 | `conversations`    | Chat history (role, content, timestamp)       |
-| `kv_memory`        | Persistent key-value store for the agent      |
+| `kv_memory`        | Legacy key-value store; superseded by file-based long-term memory (`~/.goemon/memory/`) and no longer used by the `memory` tool |
 | `skill_runs`       | Legacy skill-execution log table (no longer written to; skills are not executed as subprocesses) |
 | `workflow_runs`    | Workflow step execution logs                  |
 
@@ -150,4 +175,6 @@ All user data lives in `~/.goemon/`:
 | `goemon workflow list` | List installed workflows                             |
 | `goemon workflow run`  | Run a workflow manually                              |
 | `goemon skill list`    | List installed skills                                |
+| `goemon memory list`   | List long-term memories                              |
+| `goemon memory show`   | Show one memory's full content                       |
 | `goemon version`       | Show version                                         |

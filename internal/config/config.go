@@ -53,13 +53,19 @@ func Default() *Config {
 	return &Config{
 		LLM: LLMConfig{
 			Backends: map[string]BackendConfig{
+				"openrouter": {
+					Endpoint:  "https://openrouter.ai/api/v1",
+					Model:     "deepseek/deepseek-v4-flash",
+					APIKeyEnv: "OPENROUTER_API_KEY",
+				},
 				"ollama": {
 					Endpoint: "http://localhost:11434",
 					Model:    "gpt-oss:20b",
 				},
 			},
 			Routing: RoutingConfig{
-				Default:              "ollama",
+				Default:              "openrouter",
+				Fallback:             "ollama",
 				HealthCheckIntervalS: 30,
 			},
 		},
