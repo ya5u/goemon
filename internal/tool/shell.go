@@ -38,7 +38,7 @@ func (s *ShellExec) Execute(ctx context.Context, args json.RawMessage) (string, 
 
 	slog.Info("shell_exec", "command", params.Command)
 
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "sh", "-c", params.Command)

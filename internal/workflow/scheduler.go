@@ -6,26 +6,27 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/robfig/cron/v3"
 	"github.com/ya5u/goemon/internal/memory"
+	"github.com/ya5u/goemon/internal/skill"
 )
 
 // AgentRunner executes a prompt through the agent and returns the result.
 type AgentRunner func(ctx context.Context, prompt string) (string, error)
 
-// ScriptRunner executes a script file with input and returns the result.
-type ScriptRunner func(ctx context.Context, dir, entryPoint, input string) (string, error)
-
 // Notifier sends a workflow result to an adapter.
 type Notifier func(ctx context.Context, workflowName, message string)
 
+const maxStepRetries = 3
+
 type Scheduler struct {
 	manager   *Manager
+	skillMgr  *skill.Manager
 	runAgent  AgentRunner
-	runScript ScriptRunner
 	store     *memory.Store
 	notify    Notifier
 	parser    cron.Parser
@@ -33,15 +34,15 @@ type Scheduler struct {
 	mu        sync.Mutex
 }
 
-func NewScheduler(manager *Manager, runAgent AgentRunner, runScript ScriptRunner, store *memory.Store, notify Notifier) *Scheduler {
+func NewScheduler(manager *Manager, skillMgr *skill.Manager, runAgent AgentRunner, store *memory.Store, notify Notifier) *Scheduler {
 	return &Scheduler{
-		manager:   manager,
-		runAgent:  runAgent,
-		runScript: runScript,
-		store:     store,
-		notify:    notify,
-		parser:    cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow),
-		running:   make(map[string]bool),
+		manager:  manager,
+		skillMgr: skillMgr,
+		runAgent: runAgent,
+		store:    store,
+		notify:   notify,
+		parser:   cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow),
+		running:  make(map[string]bool),
 	}
 }
 
@@ -109,7 +110,7 @@ func (s *Scheduler) execute(ctx context.Context, wf WorkflowInfo) {
 			s.mu.Unlock()
 		}()
 
-		result, err := RunWorkflowSteps(ctx, wf, s.runAgent, s.runScript, s.store)
+		result, err := RunWorkflowSteps(ctx, wf, s.skillMgr, s.runAgent, s.store)
 		if err != nil {
 			slog.Error("workflow failed", "workflow", wf.Name, "error", err)
 			return
@@ -124,15 +125,14 @@ func (s *Scheduler) execute(ctx context.Context, wf WorkflowInfo) {
 }
 
 // RunWorkflowSteps executes all steps of a workflow sequentially.
-// A shared workspace directory is created for each run. Each step's output
-// is saved as a file (step_N_<name>.txt) in the workspace so that subsequent
-// steps can read all prior results reliably.
 //
-// Scripts receive the workspace path via the GOEMON_WORKSPACE environment variable
-// and the previous step's output file via GOEMON_PREV_RESULT.
-// Prompt steps receive all prior results concatenated in context.
-func RunWorkflowSteps(ctx context.Context, wf WorkflowInfo, runAgent AgentRunner, runScript ScriptRunner, store *memory.Store) (string, error) {
-	// Create workspace directory
+// For each step:
+//  1. Load the Skill's SKILL.md instructions
+//  2. Build a prompt combining skill instructions + step-specific context + workspace state
+//  3. Run the agent (ReAct loop with tools)
+//  4. Ask the LLM to verify the completion criteria
+//  5. Retry up to maxStepRetries times on failure
+func RunWorkflowSteps(ctx context.Context, wf WorkflowInfo, skillMgr *skill.Manager, runAgent AgentRunner, store *memory.Store) (string, error) {
 	workspace, err := os.MkdirTemp("", "goemon-workflow-*")
 	if err != nil {
 		return "", fmt.Errorf("create workspace: %w", err)
@@ -142,47 +142,53 @@ func RunWorkflowSteps(ctx context.Context, wf WorkflowInfo, runAgent AgentRunner
 	slog.Info("workflow workspace created", "workspace", workspace)
 
 	var lastResult string
-	var stepFiles []string
 
 	for i, step := range wf.Steps {
-		slog.Info("executing workflow step", "workflow", wf.Name, "step", i+1, "name", step.Name, "type", step.Type)
+		slog.Info("executing workflow step", "workflow", wf.Name, "step", i+1, "skill", step.SkillName)
 
 		start := time.Now()
 		var result string
 		var stepErr error
 
-		// Write previous result to a file for script steps to read
-		prevResultFile := ""
-		if lastResult != "" && i > 0 {
-			prevResultFile = stepFiles[len(stepFiles)-1]
+		// Load skill instructions
+		skillInfo, err := skillMgr.GetSkill(step.SkillName)
+		if err != nil {
+			return "", fmt.Errorf("step %q: load skill %q: %w", step.SkillName, step.SkillName, err)
 		}
 
-		switch step.Type {
-		case StepTypePrompt:
-			prompt := step.Prompt
-			if lastResult != "" {
-				prompt = "Previous step result:\n" + lastResult + "\n\n" + prompt
-			}
+		var attempt int
+		var feedback string
+		var validationOk bool
+		for attempt = 0; attempt < maxStepRetries; attempt++ {
+			prompt := buildStepPrompt(skillInfo.Content, step.Content, workspace, lastResult, feedback)
 			result, stepErr = runAgent(ctx, prompt)
-
-		case StepTypeScript:
-			// Set environment variables for script
-			os.Setenv("GOEMON_WORKSPACE", workspace)
-			if prevResultFile != "" {
-				os.Setenv("GOEMON_PREV_RESULT", prevResultFile)
+			if stepErr != nil {
+				feedback = fmt.Sprintf("前回の試行でエラーが発生しました: %v", stepErr)
+				continue
 			}
-			result, stepErr = runScript(ctx, wf.Dir, step.EntryPoint, lastResult)
-			os.Unsetenv("GOEMON_WORKSPACE")
-			os.Unsetenv("GOEMON_PREV_RESULT")
 
-		default:
-			return "", fmt.Errorf("step %q: unknown type %q", step.Name, step.Type)
+			// Validate completion criteria
+			var reason string
+			validationOk, reason = validateStep(ctx, step.Content, workspace, result, runAgent)
+			if validationOk {
+				break
+			}
+
+			slog.Info("step validation failed, retrying",
+				"workflow", wf.Name, "skill", step.SkillName,
+				"attempt", attempt+1, "reason", reason)
+			feedback = fmt.Sprintf("完了条件を満たしていません: %s", reason)
+		}
+
+		// If all retries exhausted without validation passing, propagate as error
+		if stepErr == nil && !validationOk {
+			stepErr = fmt.Errorf("completion criteria not met after %d attempts", maxStepRetries)
 		}
 
 		durationMs := time.Since(start).Milliseconds()
 
-		// Save step output to workspace file
-		stepFile := filepath.Join(workspace, fmt.Sprintf("step_%d_%s.txt", i+1, step.Name))
+		// Save step output to workspace
+		stepFile := filepath.Join(workspace, fmt.Sprintf("step_%d_%s.txt", i+1, step.SkillName))
 		output := result
 		if stepErr != nil {
 			output = fmt.Sprintf("ERROR: %v", stepErr)
@@ -190,31 +196,104 @@ func RunWorkflowSteps(ctx context.Context, wf WorkflowInfo, runAgent AgentRunner
 		if writeErr := os.WriteFile(stepFile, []byte(output), 0644); writeErr != nil {
 			slog.Warn("failed to write step output", "error", writeErr)
 		}
-		stepFiles = append(stepFiles, stepFile)
 
-		// Log step to database
+		// Log to DB
 		if store != nil {
 			success := stepErr == nil
 			errMsg := ""
 			if stepErr != nil {
 				errMsg = stepErr.Error()
 			}
-			input := lastResult
-			if step.Type == StepTypePrompt {
-				input = step.Prompt
-			}
-			if logErr := store.LogWorkflowStep(wf.Name, step.Name, string(step.Type), input, output, success, errMsg, durationMs); logErr != nil {
+			if logErr := store.LogWorkflowStep(wf.Name, step.SkillName, "skill", step.Content, output, success, errMsg, durationMs); logErr != nil {
 				slog.Warn("failed to log workflow step", "error", logErr)
 			}
 		}
 
 		if stepErr != nil {
-			return "", fmt.Errorf("step %q failed: %w", step.Name, stepErr)
+			return "", fmt.Errorf("step %q failed after %d attempts: %w", step.SkillName, attempt, stepErr)
 		}
 
-		slog.Info("workflow step completed", "workflow", wf.Name, "step", step.Name, "duration_ms", durationMs, "output_file", stepFile)
+		slog.Info("workflow step completed",
+			"workflow", wf.Name, "skill", step.SkillName,
+			"attempts", attempt+1, "duration_ms", durationMs)
 		lastResult = result
 	}
 
 	return lastResult, nil
+}
+
+// buildStepPrompt constructs the prompt for a workflow step.
+func buildStepPrompt(skillContent, stepContent, workspace, prevResult, feedback string) string {
+	var b strings.Builder
+
+	b.WriteString("# タスク\n\n")
+	b.WriteString(skillContent)
+	b.WriteString("\n\n")
+
+	b.WriteString("# このステップの指示\n\n")
+	b.WriteString(stepContent)
+	b.WriteString("\n\n")
+
+	b.WriteString(fmt.Sprintf("# ワークスペース\n\n作業ディレクトリ: %s\n\n", workspace))
+
+	if prevResult != "" {
+		b.WriteString("# 前のステップの結果\n\n")
+		b.WriteString(prevResult)
+		b.WriteString("\n\n")
+	}
+
+	if feedback != "" {
+		b.WriteString("# フィードバック（前回の試行より）\n\n")
+		b.WriteString(feedback)
+		b.WriteString("\n\n")
+	}
+
+	b.WriteString("タスクを完了したら、何を行ったか簡潔に報告してください。")
+
+	return b.String()
+}
+
+// validateStep asks the LLM to verify whether the completion criteria in stepContent are met.
+// Returns (true, "") on success, or (false, reason) on failure.
+func validateStep(ctx context.Context, stepContent, workspace, result string, runAgent AgentRunner) (bool, string) {
+	if !strings.Contains(stepContent, "完了条件") &&
+		!strings.Contains(stepContent, "success") &&
+		!strings.Contains(stepContent, "検証") {
+		// No explicit criteria — treat as successful
+		return true, ""
+	}
+
+	validationPrompt := fmt.Sprintf(`以下のステップの完了条件を確認してください。
+
+# ステップの指示（完了条件を含む）
+
+%s
+
+# 実行結果
+
+%s
+
+# ワークスペース
+
+%s
+
+完了条件がすべて満たされているか確認してください。
+- 満たされている場合: "COMPLETE" とだけ回答してください
+- 満たされていない場合: "INCOMPLETE: <満たされていない条件の説明>" と回答してください
+
+ファイルの存在確認など必要な場合はツールを使って確認してください。`, stepContent, result, workspace)
+
+	response, err := runAgent(ctx, validationPrompt)
+	if err != nil {
+		// Validation error — assume success to avoid infinite retries
+		slog.Warn("validation agent call failed", "error", err)
+		return true, ""
+	}
+
+	if strings.HasPrefix(strings.TrimSpace(response), "COMPLETE") {
+		return true, ""
+	}
+
+	reason := strings.TrimPrefix(strings.TrimSpace(response), "INCOMPLETE:")
+	return false, strings.TrimSpace(reason)
 }

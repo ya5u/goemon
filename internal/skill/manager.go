@@ -7,20 +7,13 @@ import (
 	"strings"
 )
 
-type InputField struct {
-	Name        string
-	Description string
-	Optional    bool
-}
-
+// SkillInfo represents an Anthropic-style Skill: a SKILL.md instruction package
+// that guides the LLM to accomplish a specific task.
 type SkillInfo struct {
 	Name        string
 	Description string
-	Trigger     string
-	EntryPoint  string
-	Language    string
+	Content     string // SKILL.md body (loaded on demand via GetSkill)
 	Dir         string
-	Inputs      []InputField
 }
 
 type Manager struct {
@@ -31,6 +24,8 @@ func NewManager(skillsDir string) *Manager {
 	return &Manager{skillsDir: skillsDir}
 }
 
+// ListSkills returns metadata (name + description) for all installed skills.
+// Content is not loaded — use GetSkill to load the full instructions.
 func (m *Manager) ListSkills() ([]SkillInfo, error) {
 	entries, err := os.ReadDir(m.skillsDir)
 	if err != nil {
@@ -45,7 +40,7 @@ func (m *Manager) ListSkills() ([]SkillInfo, error) {
 		if !e.IsDir() {
 			continue
 		}
-		info, err := m.GetSkill(e.Name())
+		info, err := m.loadMetadata(e.Name())
 		if err != nil {
 			continue
 		}
@@ -54,6 +49,7 @@ func (m *Manager) ListSkills() ([]SkillInfo, error) {
 	return skills, nil
 }
 
+// GetSkill loads the full SKILL.md content for the named skill.
 func (m *Manager) GetSkill(name string) (*SkillInfo, error) {
 	dir := filepath.Join(m.skillsDir, name)
 	skillMD := filepath.Join(dir, "SKILL.md")
@@ -63,69 +59,71 @@ func (m *Manager) GetSkill(name string) (*SkillInfo, error) {
 		return nil, fmt.Errorf("read SKILL.md: %w", err)
 	}
 
-	info := &SkillInfo{
-		Name: name,
-		Dir:  dir,
+	metaName, description, body := parseFrontmatter(string(data))
+	if metaName != "" {
+		name = metaName
 	}
-	parseSkillMD(string(data), info)
-	return info, nil
+
+	return &SkillInfo{
+		Name:        name,
+		Description: description,
+		Content:     body,
+		Dir:         dir,
+	}, nil
 }
 
 func (m *Manager) SkillsDir() string {
 	return m.skillsDir
 }
 
-func parseSkillMD(content string, info *SkillInfo) {
-	lines := strings.Split(content, "\n")
-	var currentSection string
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "## ") {
-			currentSection = strings.ToLower(strings.TrimPrefix(trimmed, "## "))
-			continue
-		}
-		if strings.HasPrefix(trimmed, "# ") && info.Name == "" {
-			info.Name = strings.TrimPrefix(trimmed, "# ")
-			continue
-		}
-		if trimmed == "" || strings.HasPrefix(trimmed, "- ") {
-			trimmed = strings.TrimPrefix(trimmed, "- ")
-		}
-		if trimmed == "" {
-			continue
-		}
-		switch currentSection {
-		case "description":
-			if info.Description == "" {
-				info.Description = trimmed
+// loadMetadata reads only the YAML frontmatter of SKILL.md (name + description).
+func (m *Manager) loadMetadata(dirName string) (*SkillInfo, error) {
+	skillMD := filepath.Join(m.skillsDir, dirName, "SKILL.md")
+	data, err := os.ReadFile(skillMD)
+	if err != nil {
+		return nil, err
+	}
+
+	name, description, _ := parseFrontmatter(string(data))
+	if name == "" {
+		name = dirName
+	}
+	return &SkillInfo{
+		Name:        name,
+		Description: description,
+		Dir:         filepath.Join(m.skillsDir, dirName),
+	}, nil
+}
+
+// parseFrontmatter parses YAML frontmatter and returns (name, description, body).
+// The body is the markdown content after the closing "---".
+func parseFrontmatter(content string) (name, description, body string) {
+	if !strings.HasPrefix(strings.TrimSpace(content), "---") {
+		return "", "", content
+	}
+
+	// Find the closing ---
+	rest := strings.TrimPrefix(strings.TrimSpace(content), "---")
+	end := strings.Index(rest, "\n---")
+	if end == -1 {
+		return "", "", content
+	}
+
+	frontmatter := rest[:end]
+	body = strings.TrimSpace(rest[end+4:]) // skip "\n---"
+
+	for _, line := range strings.Split(frontmatter, "\n") {
+		line = strings.TrimSpace(line)
+		if k, v, ok := strings.Cut(line, ":"); ok {
+			k = strings.TrimSpace(k)
+			v = strings.Trim(strings.TrimSpace(v), `"'`)
+			switch k {
+			case "name":
+				name = v
+			case "description":
+				description = v
 			}
-		case "trigger":
-			if info.Trigger == "" {
-				info.Trigger = trimmed
-			}
-		case "entry point":
-			if info.EntryPoint == "" {
-				info.EntryPoint = trimmed
-			}
-		case "language":
-			if info.Language == "" {
-				info.Language = strings.ToLower(trimmed)
-			}
-		case "input":
-			// Parse "field_name: description" or "field_name: (optional) description"
-			name, desc, _ := strings.Cut(trimmed, ":")
-			name = strings.TrimSpace(name)
-			desc = strings.TrimSpace(desc)
-			if name == "" || strings.HasPrefix(name, "(") {
-				continue
-			}
-			field := InputField{Name: name}
-			if strings.HasPrefix(desc, "(optional)") {
-				field.Optional = true
-				desc = strings.TrimSpace(strings.TrimPrefix(desc, "(optional)"))
-			}
-			field.Description = desc
-			info.Inputs = append(info.Inputs, field)
 		}
 	}
+	return name, description, body
 }

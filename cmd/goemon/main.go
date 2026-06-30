@@ -2,18 +2,15 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io/fs"
 	"log/slog"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/ya5u/goemon/internal/adapter"
 	"github.com/ya5u/goemon/internal/agent"
@@ -100,7 +97,7 @@ Commands:
   chat       Start interactive chat session
   run        Run a one-shot command
   serve      Start enabled adapters (Telegram, etc.)
-  skill      Manage skills (list, run, create, install, remove)
+  skill      Manage skills (list)
   workflow   Manage workflows (list, run)
   version    Show version
 `)
@@ -159,8 +156,6 @@ func extractStandardSkills(skillsDir string) error {
 		if err != nil {
 			return err
 		}
-
-		// Strip the "skills/" prefix to get the relative path
 		relPath, err := filepath.Rel("skills", path)
 		if err != nil {
 			return err
@@ -168,29 +163,19 @@ func extractStandardSkills(skillsDir string) error {
 		if relPath == "." {
 			return nil
 		}
-
 		destPath := filepath.Join(skillsDir, relPath)
-
 		if d.IsDir() {
 			return os.MkdirAll(destPath, 0755)
 		}
-
-		// Don't overwrite existing files (user may have modified them)
+		// Don't overwrite existing files
 		if _, err := os.Stat(destPath); err == nil {
 			return nil
 		}
-
 		data, err := templates.StandardSkills.ReadFile(path)
 		if err != nil {
 			return err
 		}
-
-		perm := os.FileMode(0644)
-		if strings.HasSuffix(path, ".sh") || strings.HasSuffix(path, ".py") {
-			perm = 0755
-		}
-
-		if err := os.WriteFile(destPath, data, perm); err != nil {
+		if err := os.WriteFile(destPath, data, 0644); err != nil {
 			return err
 		}
 		fmt.Printf("Extracted skill: %s\n", relPath)
@@ -199,7 +184,6 @@ func extractStandardSkills(skillsDir string) error {
 }
 
 func setupAgent(cfg *config.Config, store *memory.Store) (*agent.Agent, *agent.Router) {
-	// Create backends
 	backends := make(map[string]llm.Backend)
 
 	if bc, ok := cfg.LLM.Backends["ollama"]; ok {
@@ -213,20 +197,13 @@ func setupAgent(cfg *config.Config, store *memory.Store) (*agent.Agent, *agent.R
 		HealthCheckIntervalS: cfg.LLM.Routing.HealthCheckIntervalS,
 	}, backends)
 
-	// Create tool registry
 	registry := tool.NewRegistry()
 	registry.Register(&tool.ShellExec{})
 	registry.Register(&tool.FileRead{})
+	registry.Register(&tool.FileEdit{})
 	registry.Register(&tool.FileWrite{})
 	registry.Register(tool.NewWebFetch())
 	registry.Register(tool.NewMemory(store))
-
-	// Register skill provider for dynamic skill discovery
-	dataDir, _ := config.DataDir()
-	skillsDir := filepath.Join(dataDir, "skills")
-	mgr := skill.NewManager(skillsDir)
-	executor := skill.NewExecutor(store)
-	registry.RegisterProvider(skill.NewSkillProvider(mgr, executor))
 
 	callbacks := agent.WithCallbacks(
 		func(text string) {
@@ -236,7 +213,6 @@ func setupAgent(cfg *config.Config, store *memory.Store) (*agent.Agent, *agent.R
 			fmt.Printf("\033[36mGoEmon [tool:%s]:\033[0m %s\n", name, string(args))
 		},
 		func(name string, result string) {
-			// Truncate long results for display
 			display := result
 			if len(display) > 500 {
 				display = display[:500] + "..."
@@ -295,12 +271,11 @@ func runChat() error {
 			continue
 		}
 
-		// Slash commands
 		if strings.HasPrefix(input, "/") {
 			if handleSlashCommand(input, ag) {
 				continue
 			}
-			break // /quit
+			break
 		}
 
 		if _, err := ag.Run(ctx, input); err != nil {
@@ -365,7 +340,6 @@ func runServe() error {
 	router.Start(ctx)
 	defer router.Stop()
 
-	// Collect enabled adapters
 	var adapters []adapter.Adapter
 
 	if cfg.Adapters.Telegram.Enabled {
@@ -382,14 +356,14 @@ func runServe() error {
 
 	fmt.Printf("GoEmon %s | LLM: %s\n", version, router.CurrentBackendName())
 
-	// Handler that runs the agent
 	handler := func(ctx context.Context, userMessage string) (string, error) {
 		return ag.Run(ctx, userMessage)
 	}
 
-	// Start workflow scheduler
+	// Start workflow scheduler with skill manager
+	skillMgr := skill.NewManager(filepath.Join(dataDir, "skills"))
 	wfMgr := workflow.NewManager(filepath.Join(dataDir, "workflows"))
-	scheduler := workflow.NewScheduler(wfMgr, ag.RunWithoutHistory, runScriptFunc(store), store,
+	scheduler := workflow.NewScheduler(wfMgr, skillMgr, ag.RunWithoutHistory, store,
 		func(ctx context.Context, workflowName, message string) {
 			for _, a := range adapters {
 				if err := a.Send(ctx, fmt.Sprintf("[%s]\n%s", workflowName, message)); err != nil {
@@ -399,7 +373,6 @@ func runServe() error {
 		})
 	go scheduler.Start(ctx)
 
-	// Start all adapters
 	errCh := make(chan error, len(adapters))
 	for _, a := range adapters {
 		fmt.Printf("Starting adapter: %s\n", a.Name())
@@ -408,7 +381,6 @@ func runServe() error {
 		}(a)
 	}
 
-	// Wait for context cancellation or adapter error
 	select {
 	case <-ctx.Done():
 		fmt.Println("\nShutting down...")
@@ -418,7 +390,6 @@ func runServe() error {
 		}
 	}
 
-	// Stop all adapters
 	for _, a := range adapters {
 		a.Stop()
 	}
@@ -430,9 +401,6 @@ func runSkill(args []string) error {
 	if len(args) == 0 {
 		fmt.Fprintf(os.Stderr, `Usage:
   goemon skill list
-  goemon skill run <name> [input-json]
-  goemon skill install <github-url>
-  goemon skill remove <name>
 `)
 		return nil
 	}
@@ -457,52 +425,6 @@ func runSkill(args []string) error {
 		for _, s := range skills {
 			fmt.Printf("  %s — %s\n", s.Name, s.Description)
 		}
-
-	case "run":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: goemon skill run <name> [input-json]")
-		}
-		store, err := memory.New(filepath.Join(dataDir, "memory.db"))
-		if err != nil {
-			return err
-		}
-		defer store.Close()
-
-		info, err := mgr.GetSkill(args[1])
-		if err != nil {
-			return err
-		}
-		input := "{}"
-		if len(args) >= 3 {
-			input = args[2]
-		}
-		executor := skill.NewExecutor(store)
-		output, err := executor.Run(context.Background(), info, input)
-		if err != nil {
-			return err
-		}
-		fmt.Println(output)
-
-	case "install":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: goemon skill install <github-url>")
-		}
-		installer := skill.NewInstaller(skillsDir)
-		info, err := installer.Install(args[1])
-		if err != nil {
-			return err
-		}
-		fmt.Printf("Installed skill %q: %s\n", info.Name, info.Description)
-
-	case "remove":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: goemon skill remove <name>")
-		}
-		installer := skill.NewInstaller(skillsDir)
-		if err := installer.Remove(args[1]); err != nil {
-			return err
-		}
-		fmt.Printf("Removed skill %q\n", args[1])
 
 	default:
 		return fmt.Errorf("unknown skill command: %s", args[0])
@@ -568,8 +490,10 @@ func runWorkflow(args []string) error {
 		router.Start(ctx)
 		defer router.Stop()
 
+		skillMgr := skill.NewManager(filepath.Join(dataDir, "skills"))
+
 		fmt.Printf("Running workflow %q...\n", wf.Name)
-		result, err := workflow.RunWorkflowSteps(ctx, *wf, ag.RunWithoutHistory, runScriptFunc(store), store)
+		result, err := workflow.RunWorkflowSteps(ctx, *wf, skillMgr, ag.RunWithoutHistory, store)
 		if err != nil {
 			return fmt.Errorf("workflow failed: %w", err)
 		}
@@ -581,44 +505,6 @@ func runWorkflow(args []string) error {
 	return nil
 }
 
-// runScriptFunc returns a ScriptRunner that executes workflow scripts.
-func runScriptFunc(store *memory.Store) workflow.ScriptRunner {
-	return func(ctx context.Context, dir, entryPoint, input string) (string, error) {
-		ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-		defer cancel()
-
-		scriptPath := filepath.Join(dir, entryPoint)
-		var cmd *exec.Cmd
-
-		switch {
-		case strings.HasSuffix(entryPoint, ".sh"):
-			cmd = exec.CommandContext(ctx, "bash", scriptPath)
-		case strings.HasSuffix(entryPoint, ".py"):
-			cmd = exec.CommandContext(ctx, "python3", scriptPath)
-		default:
-			cmd = exec.CommandContext(ctx, scriptPath)
-		}
-
-		cmd.Dir = dir
-		cmd.Stdin = strings.NewReader(input)
-
-		var stdout, stderr bytes.Buffer
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
-
-		slog.Info("workflow script exec", "script", entryPoint, "dir", dir)
-		if err := cmd.Run(); err != nil {
-			return "", fmt.Errorf("%v: %s", err, stderr.String())
-		}
-
-		if stderr.Len() > 0 {
-			slog.Debug("workflow script stderr", "stderr", stderr.String())
-		}
-
-		return stdout.String(), nil
-	}
-}
-
 func handleSlashCommand(input string, _ *agent.Agent) bool {
 	cmd := strings.Fields(input)[0]
 	switch cmd {
@@ -626,9 +512,9 @@ func handleSlashCommand(input string, _ *agent.Agent) bool {
 		fmt.Println("Goodbye!")
 		return false
 	case "/tools":
-		fmt.Println("Available tools: shell_exec, file_read, file_write, web_fetch, memory, skill_run")
+		fmt.Println("Available tools: shell_exec, file_read, file_edit, file_write, web_fetch, memory")
 	case "/skills":
-		fmt.Println("skill commands: not yet implemented")
+		fmt.Println("Use: goemon skill list")
 	case "/memory":
 		fmt.Println("memory commands: not yet implemented")
 	case "/config":

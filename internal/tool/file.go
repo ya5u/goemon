@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // FileRead
@@ -49,6 +50,69 @@ func (f *FileRead) Execute(_ context.Context, args json.RawMessage) (string, err
 		return string(data[:maxSize]) + "\n... (truncated at 100KB)", nil
 	}
 	return string(data), nil
+}
+
+// FileEdit
+
+type FileEdit struct{}
+
+func (f *FileEdit) Name() string { return "file_edit" }
+func (f *FileEdit) Description() string {
+	return "Replace an exact string within a file. Fails if old_string is not found or matches more than once."
+}
+
+func (f *FileEdit) Parameters() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"path": map[string]any{
+				"type":        "string",
+				"description": "Absolute or relative path to the file",
+			},
+			"old_string": map[string]any{
+				"type":        "string",
+				"description": "Exact string to find (must be unique in the file)",
+			},
+			"new_string": map[string]any{
+				"type":        "string",
+				"description": "String to replace it with",
+			},
+		},
+		"required": []string{"path", "old_string", "new_string"},
+	}
+}
+
+func (f *FileEdit) Execute(_ context.Context, args json.RawMessage) (string, error) {
+	var params struct {
+		Path      string `json:"path"`
+		OldString string `json:"old_string"`
+		NewString string `json:"new_string"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return "", fmt.Errorf("parse args: %w", err)
+	}
+
+	slog.Info("file_edit", "path", params.Path)
+
+	data, err := os.ReadFile(params.Path)
+	if err != nil {
+		return "", err
+	}
+
+	content := string(data)
+	count := strings.Count(content, params.OldString)
+	if count == 0 {
+		return "", fmt.Errorf("old_string not found in %s", params.Path)
+	}
+	if count > 1 {
+		return "", fmt.Errorf("old_string found %d times in %s; add more context to make it unique", count, params.Path)
+	}
+
+	updated := strings.Replace(content, params.OldString, params.NewString, 1)
+	if err := os.WriteFile(params.Path, []byte(updated), 0644); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Replaced 1 occurrence in %s", params.Path), nil
 }
 
 // FileWrite

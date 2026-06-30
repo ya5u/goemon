@@ -1,22 +1,11 @@
-# Hello World
+---
+name: hello-world
+description: Echoes a personalized greeting. Use as a minimal working example to verify the skill system is functioning or as a starting template when creating a new skill.
+---
 
-## Description
-Minimal example skill. Echoes a greeting.
+Greet the user by name.
 
-## Trigger
-- manual: "hello world"
+- If a name is given in the step instructions, use it.
+- Otherwise, default to `World`.
 
-## Entry Point
-main.py
-
-## Language
-python
-
-## Input
-- name: (optional) name to greet
-
-## Output
-- message: greeting string
-
-## Dependencies
-- python3
+Reply with exactly: `Hello, {name}! This is a GoEmon skill.`

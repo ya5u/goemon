@@ -1,6 +1,6 @@
 # GoEmon
 
-GoEmon is a personal AI agent written in Go. It runs on a Raspberry Pi or any Linux/macOS machine, uses [Ollama](https://ollama.com/) as the primary LLM backend, and can delegate complex tasks to [Claude Code](https://claude.com/claude-code) via a built-in skill.
+GoEmon is a personal AI agent written in Go. It runs on a Raspberry Pi or any Linux/macOS machine and uses [Ollama](https://ollama.com/) as its LLM backend. Complex multi-step tasks are composed from reusable **skills** (instruction packages) and run as scheduled **workflows**.
 
 **Name origin:** Go (the language) + 右衛門 (emon, Japanese name suffix) = GoEmon. Also a reference to Goemon Ishikawa, the legendary thief who operates autonomously in the shadows. And yes, inspired by a certain blue robotic cat from the future.
 
@@ -10,7 +10,7 @@ GoEmon has three layers:
 
 - **Adapters** — External interfaces (CLI, Telegram) that connect users to the agent
 - **Core Agent** — ReAct loop with Plan-and-Execute for complex tasks, LLM routing, memory
-- **Tools & Skills** — Built-in tools (Go) and external skills (bash/python scripts)
+- **Tools, Skills & Workflows** — Built-in tools (Go), skills (`SKILL.md` instruction packages), and workflows (`WORKFLOW.md` that chain skills on a schedule)
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
 
@@ -48,9 +48,6 @@ goemon serve                     # Start adapters + workflow scheduler
 goemon version                   # Show version
 
 goemon skill list                # List installed skills
-goemon skill run <name> [input]  # Run a skill
-goemon skill install <url>       # Install skill from GitHub
-goemon skill remove <name>       # Remove a skill
 
 goemon workflow list             # List workflows
 goemon workflow run <name>       # Run a workflow manually
@@ -58,11 +55,13 @@ goemon workflow run <name>       # Run a workflow manually
 
 ### Chat Slash Commands
 
-| Command   | Description              |
-|-----------|--------------------------|
-| `/quit`   | Exit the chat session    |
-| `/tools`  | List available tools     |
-| `/config` | Show current config      |
+| Command     | Description              |
+|-------------|--------------------------|
+| `/quit`     | Exit the chat session    |
+| `/tools`    | List available tools     |
+| `/skills`   | How to list skills       |
+| `/memory`   | Memory commands (placeholder) |
+| `/config`   | Show current config      |
 
 ## Built-in Tools
 
@@ -70,13 +69,14 @@ goemon workflow run <name>       # Run a workflow manually
 |----------------|------------------------------------|
 | `shell_exec`   | Execute a shell command (30s timeout) |
 | `file_read`    | Read file contents (max 100KB)     |
+| `file_edit`    | Replace a string in a file         |
 | `file_write`   | Write content to file              |
 | `web_fetch`    | HTTP GET with HTML tag stripping   |
 | `memory`       | Store/recall key-value pairs in SQLite |
 
 ## Skills
 
-Skills are reusable automation modules stored in `~/.goemon/skills/`. Each skill is a directory containing a `SKILL.md` and an entry point script. Skills are automatically registered as LLM tools and dynamically discovered (no restart needed).
+Skills are reusable instruction packages stored in `~/.goemon/skills/`. Each skill is a directory containing a single `SKILL.md`: YAML frontmatter (`name`, `description`) plus markdown instructions that guide the LLM through a task. Skills are not executed as scripts and are not registered as tools — they are loaded on demand and injected into the agent prompt, primarily as workflow steps.
 
 See [docs/SKILL.md](docs/SKILL.md) for the full specification.
 
@@ -84,24 +84,23 @@ See [docs/SKILL.md](docs/SKILL.md) for the full specification.
 
 Shipped with GoEmon and extracted on `goemon init`. Source is in [`templates/skills/`](templates/skills/).
 
-| Skill          | Description                                      |
-|----------------|--------------------------------------------------|
-| `web-search`   | Search the web via DuckDuckGo (no API key needed)|
-| `claude-code`  | Delegate complex coding tasks to Claude Code CLI |
-| `github-pr`    | Create pull requests on GitHub repositories      |
-| `hello-world`  | Minimal example skill for testing                |
+| Skill                   | Description                                                |
+|-------------------------|------------------------------------------------------------|
+| `searching-the-web`     | Search the web via DuckDuckGo and collect real article URLs |
+| `validating-sources`    | Verify collected sources are real and accessible            |
+| `drafting-web-articles` | Draft a structured article from research results            |
+| `executing-coding-tasks`| Implement code changes and verify with build/test commands  |
+| `creating-github-prs`   | Open a pull request on GitHub via the `gh` CLI              |
+| `hello-world`           | Minimal example skill for testing                           |
 
 ## Workflows
 
-Workflows are multi-step automation tasks defined in YAML. Steps can be **prompt** (LLM execution) or **script** (shell/python). A shared workspace directory handles state between steps.
+Workflows are multi-step automation tasks defined in a single `WORKFLOW.md`. YAML frontmatter sets the `name`, cron `schedule`, and optional `notify` adapter; each `### skill-name` step references a skill and adds step-specific instructions plus completion criteria. Each step runs the referenced skill through the agent (ReAct loop with tools), and the LLM verifies the completion criteria, retrying on failure. A shared temporary workspace directory passes file-based state between steps.
 
 ```
 ~/.goemon/workflows/
 └── ai-news-digest/
-    ├── workflow.yaml
-    ├── search.sh
-    ├── fetch.sh
-    └── generate.sh
+    └── WORKFLOW.md
 ```
 
 Workflows run on a cron schedule via `goemon serve` or manually via `goemon workflow run <name>`.
@@ -120,7 +119,7 @@ Config lives at `~/.goemon/config.json`.
 {
   "llm": {
     "backends": {
-      "ollama": { "endpoint": "http://192.168.x.x:11434", "model": "gemma4:26b" }
+      "ollama": { "endpoint": "http://localhost:11434", "model": "gpt-oss:20b" }
     },
     "routing": { "default": "ollama" }
   },

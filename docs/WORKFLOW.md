@@ -2,117 +2,87 @@
 
 ## Overview
 
-Workflows are multi-step automation tasks that can be scheduled via cron or run manually from the CLI. Each step is either a **prompt** (executed by the LLM with tools) or a **script** (executed directly as a shell/python script).
+Workflows are multi-step automation tasks that can be scheduled via cron or run manually from the CLI. A workflow chains together [skills](SKILL.md): each step references a skill by name and adds step-specific instructions plus completion criteria.
 
-A shared workspace directory is created for each run, enabling reliable state passing between steps via files.
+Every step runs through the agent (ReAct loop with the built-in tools). After a step finishes, the LLM verifies the step's completion criteria; if they are not met, the step is retried. A temporary workspace directory is created per run so steps can pass state to each other through files.
 
 ## Directory Structure
 
 ```
 ~/.goemon/workflows/
 └── ai-news-digest/
-    ├── workflow.yaml    # Workflow definition (required)
-    ├── search.sh        # Script steps
-    ├── fetch.sh
-    ├── generate.sh
-    └── publish.sh
+    └── WORKFLOW.md    # Workflow definition (required)
 ```
 
-## workflow.yaml
+A workflow directory contains a single required file: `WORKFLOW.md`.
 
-Workflows are defined in YAML format.
+## WORKFLOW.md
 
-```yaml
-name: AI News Digest
+```markdown
+---
+name: ai-news-digest
 schedule: "0 8 * * *"    # cron (minute hour day month weekday)
 notify: telegram          # notification target (optional)
+---
 
-steps:
-  - name: search
-    type: script
-    entry_point: search.sh
+# AI News Digest
 
-  - name: generate
-    type: prompt
-    prompt: |
-      Generate an article based on the following data...
+Collect AI news every morning and publish a Japanese article.
 
-  - name: publish
-    type: script
-    entry_point: publish.sh
+## Steps
+
+### searching-the-web
+Search for today's AI news and save the results to the workspace.
+
+完了条件: workspace に sources.md が存在し、http/https の URL が5件以上含まれていること。
+
+### drafting-web-articles
+Draft a Japanese article from the collected sources and save it to article.md.
+
+完了条件: article.md が存在し、800字以上の本文と出典 URL が含まれていること。
 ```
 
-### Top-level Fields
+### Frontmatter
 
 | Field      | Required | Description |
 |------------|----------|-------------|
-| `name`     | Yes      | Workflow name |
-| `schedule` | Yes      | Cron expression (5 fields: minute hour day month weekday) |
-| `notify`   | No       | Adapter name to notify on completion (e.g. `telegram`) |
-| `steps`    | Yes      | Array of steps (at least one) |
+| `name`     | No       | Workflow name. Falls back to the directory name if omitted. |
+| `schedule` | Yes      | Cron expression (5 fields: minute hour day month weekday). |
+| `notify`   | No       | Adapter name to notify with the final result (e.g. `telegram`). |
 
-### Step Fields
+A workflow with no `schedule` or no steps is rejected when loaded.
 
-| Field         | Required        | Description |
-|---------------|-----------------|-------------|
-| `name`        | Yes             | Step name (used in logs and output filenames) |
-| `type`        | Yes             | `prompt` or `script` |
-| `prompt`      | If type=prompt  | Prompt text sent to the LLM |
-| `entry_point` | If type=script  | Script filename to execute |
+### Steps
 
-## Step Types
+The body's `### <skill-name>` headers define the steps, in order. Each header names a skill that must exist in `~/.goemon/skills/`. A leading number is allowed and ignored (`### 1. searching-the-web` is treated as `searching-the-web`).
 
-### prompt
+The markdown under a header is that step's instructions and completion criteria. It is combined with the referenced skill's own instructions to form the step prompt.
 
-Executes the step via the LLM (ReAct loop) with access to all registered tools.
+## Step Execution
 
-- The previous step's stdout is prepended as `Previous step result:` in the prompt
-- Does **not** save to conversation history (isolated from chat)
+For each step the scheduler:
 
-### script
+1. Loads the referenced skill's `SKILL.md` instructions (via `Manager.GetSkill`).
+2. Builds a prompt combining the skill instructions, the step-specific instructions, the workspace path, the previous step's result, and any retry feedback.
+3. Runs the agent (ReAct loop with all built-in tools), isolated from chat history.
+4. Validates the completion criteria (see below).
+5. Retries from step 2 up to **3 times** if the agent errors or validation fails. If all attempts are exhausted, the workflow stops with an error.
 
-Executes a shell script or Python script directly.
+### Completion Criteria & Validation
 
-- Execution method is determined by file extension (`.sh` → bash, `.py` → python3)
-- Timeout: 5 minutes
-- The previous step's stdout is passed via stdin
-- stdout becomes input for the next step
+If a step's instructions mention a completion criterion (the text contains `完了条件`, `success`, or `検証`), the LLM is asked to verify whether the criteria are met against the step result and workspace — replying `COMPLETE` or `INCOMPLETE: <reason>`. The reason is fed back into the next retry attempt.
+
+If a step states no explicit criteria, it is treated as successful as soon as the agent returns without error.
 
 ## Workspace
 
-A temporary workspace directory is created for each workflow run, enabling reliable file-based state passing between steps.
+A temporary workspace directory is created for each workflow run (e.g. `goemon-workflow-*`) and removed when the run finishes.
 
-### Environment Variables
+- The absolute workspace path is included in each step's prompt, so steps can write and read shared files (using `file_write` / `file_read` / `shell_exec`).
+- Each step's output is also saved to the workspace as `step_<N>_<skill-name>.txt`.
+- The previous step's textual result is passed into the next step's prompt under "前のステップの結果".
 
-The following environment variables are set for script steps:
-
-| Variable             | Description |
-|----------------------|-------------|
-| `GOEMON_WORKSPACE`   | Absolute path to the workspace directory |
-| `GOEMON_PREV_RESULT` | Path to the previous step's output file |
-
-### Passing State Between Steps
-
-There are two ways to pass data between steps:
-
-1. **stdin/stdout** (simple) — Previous step's stdout is passed as the next step's stdin
-2. **Workspace files** (recommended) — Write files to `$GOEMON_WORKSPACE` and read them in subsequent steps
-
-Workspace files are more reliable for large data or structured data.
-
-```bash
-# search.sh — save to workspace
-echo "${RESULTS}" > "${GOEMON_WORKSPACE}/search_results.json"
-
-# fetch.sh — read from workspace
-cat "${GOEMON_WORKSPACE}/search_results.json" | python3 process.py
-```
-
-### Lifecycle
-
-- Created at workflow run start
-- Each step's output is automatically saved as `step_N_<name>.txt`
-- Automatically deleted after workflow completion
+Prefer writing intermediate data to workspace files (e.g. `sources.md`, `article.md`) rather than relying on the passed-through text, especially for large or structured data.
 
 ## Running Workflows
 
@@ -124,10 +94,10 @@ goemon workflow run <name>
 
 ### Scheduled Execution
 
-When `goemon serve` is running, the scheduler checks workflows every minute and runs those matching their cron schedule.
+When `goemon serve` is running, the scheduler checks workflows every minute and runs those whose cron schedule matches the current minute.
 
-- Duplicate runs of the same workflow are prevented
-- Adding or modifying workflows in `~/.goemon/workflows/` takes effect without restart
+- Duplicate concurrent runs of the same workflow are prevented.
+- Adding or modifying workflows in `~/.goemon/workflows/` takes effect without restart.
 
 ### Listing Workflows
 
@@ -142,10 +112,10 @@ Each step's result is logged to the `workflow_runs` table in SQLite.
 | Column          | Description |
 |-----------------|-------------|
 | `workflow_name` | Workflow name |
-| `step_name`     | Step name |
-| `step_type`     | `prompt` or `script` |
-| `input`         | Step input |
-| `output`        | Step output |
+| `step_name`     | Step name (the referenced skill) |
+| `step_type`     | Always `skill` |
+| `input`         | Step instructions |
+| `output`        | Step output (or error text) |
 | `success`       | Success/failure |
 | `error_message` | Error message (on failure) |
 | `duration_ms`   | Execution time in milliseconds |
@@ -159,7 +129,7 @@ When `notify` is set to an adapter name, the final step's result is sent via tha
 
 ## Design Guidelines
 
-- **Use script steps for deterministic operations** — git operations, file I/O, API calls, cleanup
-- **Use prompt steps for tasks requiring LLM judgment** — text generation, analysis, decision-making
-- **Pass state via workspace files** — don't rely solely on stdin/stdout
-- **Keep each step focused** — one step = one responsibility
+- **One step = one skill = one responsibility** — keep each step focused.
+- **State the completion criteria explicitly** — include a `完了条件` line so the validator can catch incomplete or hallucinated results.
+- **Pass state via workspace files** — write outputs to `$workspace/<file>` and read them in later steps instead of relying solely on the passed-through text.
+- **Make instructions concrete** — name the exact files, tools, and checks a step should perform.

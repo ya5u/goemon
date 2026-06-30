@@ -4,30 +4,24 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-
-	"gopkg.in/yaml.v3"
+	"regexp"
+	"strings"
 )
 
-type StepType string
-
-const (
-	StepTypePrompt StepType = "prompt"
-	StepTypeScript StepType = "script"
-)
-
+// WorkflowStep is one step in a workflow, referencing a Skill by name.
+// Content holds the markdown under the step header (instructions + completion criteria).
 type WorkflowStep struct {
-	Name       string   `yaml:"name"`
-	Type       StepType `yaml:"type"`
-	Prompt     string   `yaml:"prompt,omitempty"`      // for type: prompt
-	EntryPoint string   `yaml:"entry_point,omitempty"` // for type: script
+	SkillName string
+	Content   string
 }
 
+// WorkflowInfo is parsed from WORKFLOW.md.
 type WorkflowInfo struct {
-	Name     string         `yaml:"name"`
-	Schedule string         `yaml:"schedule"`
-	Notify   string         `yaml:"notify,omitempty"`
-	Steps    []WorkflowStep `yaml:"steps"`
-	Dir      string         `yaml:"-"`
+	Name     string
+	Schedule string
+	Notify   string
+	Steps    []WorkflowStep
+	Dir      string
 }
 
 type Manager struct {
@@ -64,22 +58,14 @@ func (m *Manager) ListWorkflows() ([]WorkflowInfo, error) {
 func (m *Manager) GetWorkflow(name string) (*WorkflowInfo, error) {
 	dir := filepath.Join(m.workflowsDir, name)
 
-	// Try workflow.yaml first, then workflow.yml
-	var data []byte
-	var err error
-	for _, filename := range []string{"workflow.yaml", "workflow.yml"} {
-		data, err = os.ReadFile(filepath.Join(dir, filename))
-		if err == nil {
-			break
-		}
-	}
+	data, err := os.ReadFile(filepath.Join(dir, "WORKFLOW.md"))
 	if err != nil {
-		return nil, fmt.Errorf("read workflow.yaml: %w", err)
+		return nil, fmt.Errorf("read WORKFLOW.md: %w", err)
 	}
 
-	var wf WorkflowInfo
-	if err := yaml.Unmarshal(data, &wf); err != nil {
-		return nil, fmt.Errorf("parse workflow.yaml: %w", err)
+	wf, err := parseWorkflowMD(string(data))
+	if err != nil {
+		return nil, fmt.Errorf("parse WORKFLOW.md: %w", err)
 	}
 
 	wf.Dir = dir
@@ -94,5 +80,89 @@ func (m *Manager) GetWorkflow(name string) (*WorkflowInfo, error) {
 		return nil, fmt.Errorf("workflow %q has no steps", name)
 	}
 
-	return &wf, nil
+	return wf, nil
+}
+
+// stepHeaderRe matches "### skill-name" or "### 1. skill-name"
+var stepHeaderRe = regexp.MustCompile(`^###\s+(?:\d+\.\s+)?(.+)$`)
+
+// parseWorkflowMD parses a WORKFLOW.md file.
+//
+// Format:
+//
+//	---
+//	name: my-workflow
+//	schedule: "0 8 * * *"
+//	notify: telegram
+//	---
+//
+//	# Title
+//
+//	Description...
+//
+//	## Steps
+//
+//	### skill-name
+//	Step instructions and completion criteria.
+//
+//	### another-skill
+//	More instructions.
+func parseWorkflowMD(content string) (*WorkflowInfo, error) {
+	wf := &WorkflowInfo{}
+
+	// Parse YAML frontmatter
+	body := content
+	if strings.HasPrefix(strings.TrimSpace(content), "---") {
+		rest := strings.TrimPrefix(strings.TrimSpace(content), "---")
+		end := strings.Index(rest, "\n---")
+		if end != -1 {
+			frontmatter := rest[:end]
+			body = strings.TrimSpace(rest[end+4:])
+			for _, line := range strings.Split(frontmatter, "\n") {
+				line = strings.TrimSpace(line)
+				if k, v, ok := strings.Cut(line, ":"); ok {
+					k = strings.TrimSpace(k)
+					v = strings.Trim(strings.TrimSpace(v), `"'`)
+					switch k {
+					case "name":
+						wf.Name = v
+					case "schedule":
+						wf.Schedule = v
+					case "notify":
+						wf.Notify = v
+					}
+				}
+			}
+		}
+	}
+
+	// Parse steps from ### headers
+	lines := strings.Split(body, "\n")
+	var currentStep *WorkflowStep
+	var currentLines []string
+
+	flushStep := func() {
+		if currentStep != nil {
+			currentStep.Content = strings.TrimSpace(strings.Join(currentLines, "\n"))
+			wf.Steps = append(wf.Steps, *currentStep)
+			currentStep = nil
+			currentLines = nil
+		}
+	}
+
+	for _, line := range lines {
+		if m := stepHeaderRe.FindStringSubmatch(line); m != nil {
+			flushStep()
+			skillName := strings.TrimSpace(m[1])
+			currentStep = &WorkflowStep{SkillName: skillName}
+			currentLines = nil
+			continue
+		}
+		if currentStep != nil {
+			currentLines = append(currentLines, line)
+		}
+	}
+	flushStep()
+
+	return wf, nil
 }

@@ -11,7 +11,7 @@
 │  ReAct / Plan-and-Execute │ LLM Router  │
 ├──────────────────────────────────────────┤
 │    Tools          Skills       Workflows │
-│  (built-in)    (scripts)    (YAML+scripts)│
+│  (built-in)  (SKILL.md)   (WORKFLOW.md)   │
 └──────────────────────────────────────────┘
 ```
 
@@ -53,19 +53,20 @@ Built-in capabilities compiled into the GoEmon binary.
 |--------------|------------------------------------------|
 | `shell_exec` | Execute a shell command (30s timeout)    |
 | `file_read`  | Read file contents (max 100KB)           |
+| `file_edit`  | Replace a string in a file               |
 | `file_write` | Write content to file                    |
 | `web_fetch`  | HTTP GET with script/style/tag stripping |
 | `memory`     | Store/recall key-value pairs in SQLite   |
 
 ### Skills
 
-Reusable automation modules implemented as external scripts (bash, python, etc.). Skills run as subprocesses with JSON in (stdin) and JSON out (stdout).
+Anthropic-style instruction packages. Each skill is a directory containing a single `SKILL.md` that guides the LLM through a task — there is no entry point script and nothing is executed as a subprocess.
 
-- Each skill is a directory with a `SKILL.md` and an entry point script
-- Skills are **dynamically discovered** via `ToolProvider` — adding/removing a skill directory takes effect on the next LLM call without restart
-- Each skill's `## Input` section in `SKILL.md` is parsed into a JSON Schema and exposed as tool parameters to the LLM
-- Tool name format: `skill_<name>` (e.g., `skill_web-search`)
-- Users can install skills from GitHub via `goemon skill install <url>`
+- `SKILL.md` has YAML frontmatter (`name`, `description`) followed by markdown instructions
+- Skills are **not** registered as LLM tools; they are loaded on demand (`Manager.GetSkill`) and injected into the agent prompt
+- Their main consumer is workflows: a workflow step references a skill by name, and the skill's instructions become the basis of that step's prompt
+- Discovered by scanning `~/.goemon/skills/`, so adding or removing a skill directory takes effect without restart
+- `goemon skill list` shows installed skills
 
 See [SKILL.md](SKILL.md) for the full specification.
 
@@ -73,18 +74,21 @@ See [SKILL.md](SKILL.md) for the full specification.
 
 Embedded in the binary via `go:embed` (`templates/skills/`). Extracted to `~/.goemon/skills/` on `goemon init`.
 
-| Skill          | Description                                      |
-|----------------|--------------------------------------------------|
-| `web-search`   | Search the web via DuckDuckGo (no API key needed)|
-| `claude-code`  | Delegate complex coding tasks to Claude Code CLI |
-| `github-pr`    | Create pull requests on GitHub repositories      |
-| `hello-world`  | Minimal example skill for testing                |
+| Skill                   | Description                                                |
+|-------------------------|------------------------------------------------------------|
+| `searching-the-web`     | Search the web via DuckDuckGo and collect real article URLs |
+| `validating-sources`    | Verify collected sources are real and accessible            |
+| `drafting-web-articles` | Draft a structured article from research results            |
+| `executing-coding-tasks`| Implement code changes and verify with build/test commands  |
+| `creating-github-prs`   | Open a pull request on GitHub via the `gh` CLI              |
+| `hello-world`           | Minimal example skill for testing                           |
 
 ### Workflows
 
-Multi-step automation tasks defined in `workflow.yaml`. Each step is either a **prompt** (LLM execution) or a **script** (shell/python execution).
+Multi-step automation tasks defined in a single `WORKFLOW.md`. YAML frontmatter sets `name`, the cron `schedule`, and an optional `notify` adapter; each `### skill-name` step references a skill and adds step-specific instructions plus completion criteria.
 
-- A shared workspace directory (`$GOEMON_WORKSPACE`) is created per run for state passing between steps
+- Each step loads its skill's instructions, runs the agent (ReAct loop with tools), then asks the LLM to verify the completion criteria — retrying up to 3 times on failure
+- A temporary workspace directory is created per run for file-based state passing between steps, and removed when the run finishes
 - Cron-scheduled via `goemon serve`, or run manually via `goemon workflow run <name>`
 - Dynamically discovered — adding a workflow directory takes effect without restart
 - Execution logs are stored in SQLite (`workflow_runs` table)
@@ -93,7 +97,7 @@ See [WORKFLOW.md](WORKFLOW.md) for the full specification.
 
 ## LLM Backend
 
-GoEmon uses a local Ollama instance as its primary LLM backend. The `claude-code` skill can handle complex coding tasks without a direct cloud API key.
+GoEmon uses a local Ollama instance as its LLM backend. Complex coding tasks are handled by the `executing-coding-tasks` skill, which drives the agent's built-in tools rather than calling out to a cloud API.
 
 ### Router
 
@@ -115,14 +119,15 @@ All user data lives in `~/.goemon/`:
 ├── AGENTS.md        # System prompt customization
 ├── memory.db        # SQLite: conversations, KV memory, skill/workflow logs
 ├── skills/          # Installed skills (standard + user)
-│   ├── web-search/
-│   ├── claude-code/
-│   ├── github-pr/
+│   ├── searching-the-web/
+│   │   └── SKILL.md
+│   ├── executing-coding-tasks/
+│   │   └── SKILL.md
 │   └── hello-world/
+│       └── SKILL.md
 └── workflows/       # Workflow definitions
     └── ai-news-digest/
-        ├── workflow.yaml
-        └── *.sh
+        └── WORKFLOW.md
 ```
 
 ### SQLite Tables
@@ -131,7 +136,7 @@ All user data lives in `~/.goemon/`:
 |--------------------|----------------------------------------------|
 | `conversations`    | Chat history (role, content, timestamp)       |
 | `kv_memory`        | Persistent key-value store for the agent      |
-| `skill_runs`       | Skill execution logs                          |
+| `skill_runs`       | Legacy skill-execution log table (no longer written to; skills are not executed as subprocesses) |
 | `workflow_runs`    | Workflow step execution logs                  |
 
 ## Commands
@@ -145,7 +150,4 @@ All user data lives in `~/.goemon/`:
 | `goemon workflow list` | List installed workflows                             |
 | `goemon workflow run`  | Run a workflow manually                              |
 | `goemon skill list`    | List installed skills                                |
-| `goemon skill run`     | Run a skill                                          |
-| `goemon skill install` | Install skill from GitHub                            |
-| `goemon skill remove`  | Remove a skill                                       |
 | `goemon version`       | Show version                                         |

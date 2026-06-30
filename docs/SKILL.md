@@ -2,180 +2,83 @@
 
 ## Overview
 
-Skills are reusable automation modules implemented as external scripts (bash, python, etc.). They are automatically registered as LLM tools and dynamically discovered — no restart is needed when adding or removing skills.
+Skills are reusable, Anthropic-style **instruction packages**. Each skill is a directory containing a single `SKILL.md` that guides the LLM through a specific task.
+
+Skills are **not** executed as scripts and are **not** registered as LLM tools. Instead, a skill's instructions are loaded on demand and injected into the agent's prompt — most commonly as a step inside a [workflow](WORKFLOW.md). The agent then carries out the task using its built-in tools (`shell_exec`, `file_read`, `file_edit`, `file_write`, `web_fetch`, `memory`).
 
 ## Directory Structure
 
 ```
 ~/.goemon/skills/
-├── web-search/
-│   ├── SKILL.md      # Metadata definition (required)
-│   └── main.py       # Entry point script
-├── claude-code/
-│   ├── SKILL.md
-│   └── main.sh
+├── searching-the-web/
+│   └── SKILL.md
+├── executing-coding-tasks/
+│   └── SKILL.md
 └── hello-world/
-    ├── SKILL.md
-    └── main.py
+    └── SKILL.md
 ```
+
+A skill directory contains exactly one required file: `SKILL.md`. Supporting files may be added, but there is no entry point script — nothing in the directory is executed directly.
 
 ## SKILL.md Format
 
 ```markdown
-# Skill Name
+---
+name: searching-the-web
+description: Searches the web and collects real article URLs with summaries. Use when the task requires current information from the web.
+---
 
-## Description
-One-line description. Used as the tool description for the LLM.
+Search the web using `web_fetch` and collect results with real, accessible URLs.
 
-## Trigger
-- manual: "trigger phrase"
+## Search workflow
 
-## Entry Point
-main.sh
-
-## Language
-bash
-
-## Input
-- field_name: Field description
-- optional_field: (optional) Optional field description
-
-## Output
-- result_field: Output field description
-
-## Dependencies
-- required external commands
+### Step 1: Fetch search results
+...
 ```
 
-### Sections
+### Frontmatter
 
-| Section      | Required | Description |
-|--------------|----------|-------------|
-| Description  | Yes      | Tool description shown to the LLM |
-| Trigger      | No       | Manual/automatic trigger definitions |
-| Entry Point  | Yes      | Script filename to execute |
-| Language     | Yes      | Determines execution method (`bash`, `python`, etc.) |
-| Input        | No       | Input parameter definitions, converted to JSON Schema for the LLM |
-| Output       | No       | Output format documentation |
-| Dependencies | No       | Required external commands documentation |
+| Field         | Required | Description |
+|---------------|----------|-------------|
+| `name`        | No       | Skill name. Falls back to the directory name if omitted. |
+| `description` | Yes      | One-line summary. Shown by `goemon skill list` and used to decide when the skill is relevant. |
 
-## Input Parameters
+### Body
 
-Each line in the `## Input` section is parsed into a JSON Schema parameter for the LLM tool definition.
+Everything after the closing `---` is free-form markdown instructions written for the LLM. Describe the goal, the step-by-step procedure, which built-in tools to use, and any output expectations. The body is loaded verbatim into the prompt when the skill runs.
 
-### Syntax
+## How Skills Are Used
 
-```markdown
-## Input
-- query: Search query string
-- max_results: (optional) Maximum number of results. Default 5.
-```
+Skills are managed by `internal/skill.Manager`:
 
-### Parsing Rules
+- `ListSkills()` — reads only the frontmatter (`name`, `description`) of every skill, for listing.
+- `GetSkill(name)` — loads the full `SKILL.md` body for one skill.
 
-- `- field_name: description` → required parameter
-- `- field_name: (optional) description` → optional parameter
-- Field name is before the colon, description is after
-- Descriptions starting with `(optional)` mark the field as optional
-
-### Generated JSON Schema
-
-The example above produces the following schema, which is sent to the LLM:
-
-```json
-{
-  "type": "object",
-  "properties": {
-    "query": {
-      "type": "string",
-      "description": "Search query string"
-    },
-    "max_results": {
-      "type": "string",
-      "description": "Maximum number of results. Default 5."
-    }
-  },
-  "required": ["query"]
-}
-```
-
-## Execution Model
-
-### I/O
-
-- **Input**: LLM parameters are passed as JSON via stdin
-- **Output**: Results written to stdout (JSON recommended)
-- **Errors**: stderr is logged
-- **Timeout**: 60 seconds
-
-### Execution Method
-
-Determined by the Language field:
-
-| Language           | Command                  |
-|--------------------|--------------------------|
-| `bash`, `sh`       | `bash <entry_point>`     |
-| `python`, `python3` | `python3 <entry_point>` |
-| Other              | `./<entry_point>` (direct execution) |
-
-## LLM Tool Registration
-
-Skills are automatically registered as LLM tools at runtime.
-
-- Tool name: `skill_<skill-name>` (e.g., `skill_web-search`)
-- Description: from the `## Description` section
-- Parameters: auto-generated from the `## Input` section
-
-### Dynamic Discovery
-
-Skills are discovered via the `ToolProvider` interface. The skills directory is scanned on each LLM call, so adding or removing a skill directory takes effect immediately without restarting GoEmon.
+When a workflow step references a skill by name, the scheduler calls `GetSkill` and combines the skill's instructions with the step-specific instructions and workspace state to build the step prompt. See [WORKFLOW.md](WORKFLOW.md).
 
 ## Standard Skills
 
-Extracted to `~/.goemon/skills/` on `goemon init`. Source is embedded in the binary from `templates/skills/`.
+Embedded in the binary via `go:embed` (`templates/skills/`) and extracted to `~/.goemon/skills/` on `goemon init`. Existing files are never overwritten.
 
-| Skill        | Description |
-|--------------|-------------|
-| `web-search` | Search the web via DuckDuckGo. No API key required |
-| `claude-code`| Delegate complex coding tasks to Claude Code CLI |
-| `github-pr`  | Create pull requests on GitHub repositories |
-| `hello-world`| Minimal example skill |
+| Skill                    | Description |
+|--------------------------|-------------|
+| `searching-the-web`      | Search the web via DuckDuckGo and collect real article URLs with summaries |
+| `validating-sources`     | Verify collected sources are real and accessible before they are used |
+| `drafting-web-articles`  | Draft a structured article from research results |
+| `executing-coding-tasks` | Implement code changes by reading/editing files and verifying with build/test commands |
+| `creating-github-prs`    | Commit changes to a new branch and open a pull request via the `gh` CLI |
+| `hello-world`            | Minimal example skill for testing and as a starting template |
 
 ## CLI Commands
 
 ```bash
-goemon skill list                    # List skills
-goemon skill run <name> [input-json] # Run a skill
-goemon skill install <github-url>    # Install from GitHub
-goemon skill remove <name>           # Remove a skill
+goemon skill list    # List installed skills (name — description)
 ```
-
-## Execution Logs
-
-Skill runs are logged to the `skill_runs` table in SQLite.
-
-| Column         | Description |
-|----------------|-------------|
-| `skill_name`   | Skill name |
-| `input`        | Input JSON |
-| `output`       | Output |
-| `success`      | Success/failure |
-| `error_message`| Error message |
-| `duration_ms`  | Execution time in milliseconds |
 
 ## Creating Skills
 
-### Manual
+1. Create a directory under `~/.goemon/skills/<name>/`.
+2. Add a `SKILL.md` with `name`/`description` frontmatter and markdown instructions following the format above.
+3. Reference the skill by `<name>` from a workflow step (see [WORKFLOW.md](WORKFLOW.md)).
 
-1. Create a directory under `~/.goemon/skills/<name>/`
-2. Add a `SKILL.md` following the format above
-3. Add an entry point script
-4. The skill is available immediately (no restart needed)
-
-### From GitHub
-
-```bash
-goemon skill install https://github.com/user/repo
-```
-
-The repository is cloned to `~/.goemon/skills/<repo-name>/`. It must contain a `SKILL.md`.
+The skill is picked up immediately — no restart needed. To ship a skill with GoEmon, add its directory under `templates/skills/`; it will be embedded in the binary and extracted on `goemon init`.
