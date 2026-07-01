@@ -283,11 +283,12 @@ func validateStep(ctx context.Context, stepContent, workspace, result string, ru
 
 %s
 
-Verify that all completion criteria are satisfied.
-- If they are: reply with exactly "COMPLETE"
-- If not: reply "INCOMPLETE: <what is missing>"
+Judge whether all completion criteria are satisfied, using the result above.
+Only use tools if you truly need to check something (e.g. confirm a file exists).
 
-Use tools to check when necessary (e.g. confirm a file exists).`, stepContent, result, workspace)
+Then end your reply with the verdict on its own final line, exactly one of:
+COMPLETE
+INCOMPLETE: <what is missing>`, stepContent, result, workspace)
 
 	response, err := runAgent(ctx, validationPrompt)
 	if err != nil {
@@ -296,10 +297,33 @@ Use tools to check when necessary (e.g. confirm a file exists).`, stepContent, r
 		return true, ""
 	}
 
-	if strings.HasPrefix(strings.TrimSpace(response), "COMPLETE") {
-		return true, ""
-	}
+	return parseValidationVerdict(response)
+}
 
-	reason := strings.TrimPrefix(strings.TrimSpace(response), "INCOMPLETE:")
-	return false, strings.TrimSpace(reason)
+// parseValidationVerdict extracts the COMPLETE / INCOMPLETE verdict from a
+// validation reply. Models tend to explain first and put the verdict on the
+// last line, sometimes wrapped in Markdown (e.g. "**COMPLETE**"), so we scan
+// from the bottom for the first line mentioning a verdict rather than requiring
+// the whole reply to start with it. If no verdict is found, we treat the step
+// as complete to avoid retrying a step that likely succeeded.
+func parseValidationVerdict(response string) (bool, string) {
+	lines := strings.Split(response, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		lower := strings.ToLower(line)
+		// Check INCOMPLETE first — it contains the substring "complete".
+		if idx := strings.Index(lower, "incomplete"); idx >= 0 {
+			reason := strings.TrimSpace(line[idx+len("incomplete"):])
+			reason = strings.TrimSpace(strings.TrimPrefix(reason, ":"))
+			reason = strings.Trim(reason, "*`_ ")
+			return false, reason
+		}
+		if strings.Contains(lower, "complete") {
+			return true, ""
+		}
+	}
+	return true, ""
 }
