@@ -274,7 +274,10 @@ func runChat() error {
 	router.Start(ctx)
 	defer router.Stop()
 
-	fmt.Printf("GoEmon %s | LLM: %s\n\n", version, router.CurrentBackendName())
+	skillMgr := skill.NewManager(filepath.Join(dataDir, "skills"))
+
+	fmt.Printf("GoEmon %s | LLM: %s\n", version, router.CurrentBackendName())
+	fmt.Printf("Type /skills to list skills, /<skill-name> [input] to run one, /quit to exit.\n\n")
 
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
@@ -288,7 +291,7 @@ func runChat() error {
 		}
 
 		if strings.HasPrefix(input, "/") {
-			if handleSlashCommand(input, ag) {
+			if handleSlashCommand(ctx, input, ag, skillMgr) {
 				continue
 			}
 			break
@@ -372,12 +375,18 @@ func runServe() error {
 
 	fmt.Printf("GoEmon %s | LLM: %s\n", version, router.CurrentBackendName())
 
+	skillMgr := skill.NewManager(filepath.Join(dataDir, "skills"))
+
 	handler := func(ctx context.Context, userMessage string) (string, error) {
+		// A "/<skill-name> [input]" message runs that skill directly, skipping
+		// the discovery round-trips a plain request would need.
+		if name, input, ok := parseSlashCommand(userMessage); ok {
+			return runSkillMessage(ctx, ag, skillMgr, name, input)
+		}
 		return ag.Run(ctx, userMessage)
 	}
 
-	// Start workflow scheduler with skill manager
-	skillMgr := skill.NewManager(filepath.Join(dataDir, "skills"))
+	// Start workflow scheduler with the same skill manager
 	wfMgr := workflow.NewManager(filepath.Join(dataDir, "workflows"))
 	scheduler := workflow.NewScheduler(wfMgr, skillMgr, ag.RunWithoutHistory, store,
 		func(ctx context.Context, workflowName, message string) {
@@ -488,14 +497,70 @@ func runSkillOnce(mgr *skill.Manager, name, input string) error {
 	router.Start(ctx)
 	defer router.Stop()
 
-	prompt := "# タスク\n\n" + skillInfo.Content
-	if input != "" {
-		prompt += "\n\n# 入力\n\n" + input
-	}
-
 	fmt.Printf("Running skill %q...\n", skillInfo.Name)
-	_, err = ag.RunWithoutHistory(ctx, prompt)
+	_, err = ag.RunWithoutHistory(ctx, skillPrompt(skillInfo.Content, input))
 	return err
+}
+
+// skillPrompt builds the one-shot prompt for running a skill: its instructions
+// plus any caller-provided input. Shared by CLI, chat, and adapter entry points.
+func skillPrompt(content, input string) string {
+	prompt := "# Task\n\n" + content
+	if input != "" {
+		prompt += "\n\n# Input\n\n" + input
+	}
+	return prompt
+}
+
+// skillRunner is satisfied by *agent.Agent; it runs a prompt without touching
+// conversation history.
+type skillRunner interface {
+	RunWithoutHistory(ctx context.Context, input string) (string, error)
+}
+
+// parseSlashCommand splits a "/<name> [input]" message into its command name
+// (without the leading slash) and the trailing input. ok is false if msg does
+// not start with "/".
+func parseSlashCommand(msg string) (name, input string, ok bool) {
+	msg = strings.TrimSpace(msg)
+	if !strings.HasPrefix(msg, "/") {
+		return "", "", false
+	}
+	cmd := strings.Fields(msg)[0]
+	name = strings.TrimPrefix(cmd, "/")
+	input = strings.TrimSpace(strings.TrimPrefix(msg, cmd))
+	return name, input, true
+}
+
+// skillListText renders the installed skills as a "/name — description" list.
+func skillListText(mgr *skill.Manager) string {
+	skills, err := mgr.ListSkills()
+	if err != nil {
+		return fmt.Sprintf("Error listing skills: %v", err)
+	}
+	if len(skills) == 0 {
+		return "No skills installed."
+	}
+	var sb strings.Builder
+	sb.WriteString("Run a skill with /<name> [input]:\n")
+	for _, s := range skills {
+		fmt.Fprintf(&sb, "/%s — %s\n", s.Name, s.Description)
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+// runSkillMessage handles a slash message ("/skills" or "/<skill> [input]") by
+// running the referenced skill and returning its result. Used by adapters,
+// which need the result as a string rather than streamed callbacks.
+func runSkillMessage(ctx context.Context, ag skillRunner, mgr *skill.Manager, name, input string) (string, error) {
+	if name == "skills" || name == "help" {
+		return skillListText(mgr), nil
+	}
+	skillInfo, err := mgr.GetSkill(name)
+	if err != nil {
+		return "Unknown skill: " + name + "\n\n" + skillListText(mgr), nil
+	}
+	return ag.RunWithoutHistory(ctx, skillPrompt(skillInfo.Content, input))
 }
 
 func runWorkflow(args []string) error {
@@ -616,7 +681,10 @@ func runMemory(args []string) error {
 	return nil
 }
 
-func handleSlashCommand(input string, _ *agent.Agent) bool {
+// handleSlashCommand handles chat slash commands. It returns false to end the
+// session. Besides the built-in commands, any /<skill-name> [input] runs that
+// skill once through the current agent.
+func handleSlashCommand(ctx context.Context, input string, ag *agent.Agent, skillMgr *skill.Manager) bool {
 	cmd := strings.Fields(input)[0]
 	switch cmd {
 	case "/quit", "/exit":
@@ -625,7 +693,17 @@ func handleSlashCommand(input string, _ *agent.Agent) bool {
 	case "/tools":
 		fmt.Println("Available tools: shell_exec, file_read, file_edit, file_write, web_fetch, memory")
 	case "/skills":
-		fmt.Println("Use: goemon skill list | goemon skill run <name> [input]")
+		skills, err := skillMgr.ListSkills()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		} else if len(skills) == 0 {
+			fmt.Println("No skills installed.")
+		} else {
+			fmt.Println("Run a skill with /<name> [input]:")
+			for _, s := range skills {
+				fmt.Printf("  /%s — %s\n", s.Name, s.Description)
+			}
+		}
 	case "/memory":
 		fmt.Println("Use: goemon memory list | goemon memory show <name>")
 	case "/config":
@@ -637,8 +715,19 @@ func handleSlashCommand(input string, _ *agent.Agent) bool {
 			fmt.Println(string(data))
 		}
 	default:
-		fmt.Printf("Unknown command: %s\n", cmd)
-		fmt.Println("Available: /quit, /tools, /skills, /memory, /config")
+		// Treat /<name> [input] as "run this skill".
+		name := strings.TrimPrefix(cmd, "/")
+		skillInfo, err := skillMgr.GetSkill(name)
+		if err != nil {
+			fmt.Printf("Unknown command or skill: %s\n", cmd)
+			fmt.Println("Available: /quit, /tools, /skills, /memory, /config, or /<skill-name> [input]")
+			return true
+		}
+		skillInput := strings.TrimSpace(strings.TrimPrefix(input, cmd))
+		fmt.Printf("Running skill %q...\n", skillInfo.Name)
+		if _, err := ag.RunWithoutHistory(ctx, skillPrompt(skillInfo.Content, skillInput)); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 	}
 	return true
 }

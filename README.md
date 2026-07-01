@@ -63,13 +63,18 @@ goemon memory show <name>        # Show one memory's full content
 
 ### Chat Slash Commands
 
-| Command     | Description              |
-|-------------|--------------------------|
-| `/quit`     | Exit the chat session    |
-| `/tools`    | List available tools     |
-| `/skills`   | How to list skills       |
-| `/memory`   | Memory commands (placeholder) |
-| `/config`   | Show current config      |
+| Command                  | Description                            |
+|--------------------------|----------------------------------------|
+| `/quit`                  | Exit the chat session                  |
+| `/tools`                 | List available tools                   |
+| `/skills`                | List installed skills (with their `/`-command names) |
+| `/<skill-name> [input]`  | Run that skill once through the agent  |
+| `/memory`                | How to inspect long-term memory        |
+| `/config`                | Show current config                    |
+
+Any slash command that isn't a built-in is treated as a skill name, so e.g. `/hello-world Yasu` or `/monitoring-system-health` runs that skill directly (the chat equivalent of `goemon skill run`).
+
+The same `/skills` and `/<skill-name> [input]` messages also work through adapters like Telegram, so you can trigger a skill from your phone. Running a skill directly injects its instructions up front, avoiding the discovery round-trips a plain natural-language request would spend.
 
 ## Built-in Tools
 
@@ -152,7 +157,7 @@ Config lives at `~/.goemon/config.json`.
     },
     "routing": { "default": "openrouter", "fallback": "ollama" }
   },
-  "agent": { "max_iterations": 10 },
+  "agent": { "max_iterations": 20 },
   "adapters": {
     "telegram": {
       "enabled": true,

@@ -129,7 +129,8 @@ func needsPlanning(input string) bool {
 		signals++
 	}
 
-	// Check for sequential keywords
+	// Check for sequential keywords. Locale-matching data: the Japanese entries
+	// are intentional so complexity detection works on Japanese input — keep them.
 	seqKeywords := []string{
 		"first", "then", "next", "finally", "after that", "last",
 		"まず", "次に", "その後", "最後に", "続いて",
@@ -146,7 +147,8 @@ func needsPlanning(input string) bool {
 		signals++
 	}
 
-	// Check for multiple action verbs
+	// Check for multiple action verbs. Locale-matching data: the Japanese entries
+	// are intentional so complexity detection works on Japanese input — keep them.
 	actionVerbs := []string{
 		"search", "fetch", "write", "create", "read", "execute", "run",
 		"send", "install", "delete", "update", "build", "deploy",
@@ -162,7 +164,8 @@ func needsPlanning(input string) bool {
 		signals++
 	}
 
-	// Long input with multiple sentences
+	// Long input with multiple sentences. Counts both the Japanese sentence
+	// delimiter "。" and English periods; the Japanese one is intentional.
 	if len(input) > 500 {
 		sentences := strings.Count(input, "。") + strings.Count(input, ". ") + strings.Count(input, ".\n")
 		if sentences >= 3 {

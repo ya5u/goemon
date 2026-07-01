@@ -70,7 +70,7 @@ func Default() *Config {
 			},
 		},
 		Agent: AgentConfig{
-			MaxIterations: 10,
+			MaxIterations: 20,
 		},
 		Memory: MemoryConfig{
 			ConversationHistoryLimit: 50,

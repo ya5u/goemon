@@ -163,7 +163,7 @@ func RunWorkflowSteps(ctx context.Context, wf WorkflowInfo, skillMgr *skill.Mana
 			prompt := buildStepPrompt(skillInfo.Content, step.Content, workspace, lastResult, feedback)
 			result, stepErr = runAgent(ctx, prompt)
 			if stepErr != nil {
-				feedback = fmt.Sprintf("前回の試行でエラーが発生しました: %v", stepErr)
+				feedback = fmt.Sprintf("The previous attempt errored: %v", stepErr)
 				continue
 			}
 
@@ -177,7 +177,7 @@ func RunWorkflowSteps(ctx context.Context, wf WorkflowInfo, skillMgr *skill.Mana
 			slog.Info("step validation failed, retrying",
 				"workflow", wf.Name, "skill", step.SkillName,
 				"attempt", attempt+1, "reason", reason)
-			feedback = fmt.Sprintf("完了条件を満たしていません: %s", reason)
+			feedback = fmt.Sprintf("Completion criteria not met: %s", reason)
 		}
 
 		// If all retries exhausted without validation passing, propagate as error
@@ -226,29 +226,29 @@ func RunWorkflowSteps(ctx context.Context, wf WorkflowInfo, skillMgr *skill.Mana
 func buildStepPrompt(skillContent, stepContent, workspace, prevResult, feedback string) string {
 	var b strings.Builder
 
-	b.WriteString("# タスク\n\n")
+	b.WriteString("# Task\n\n")
 	b.WriteString(skillContent)
 	b.WriteString("\n\n")
 
-	b.WriteString("# このステップの指示\n\n")
+	b.WriteString("# Step instructions\n\n")
 	b.WriteString(stepContent)
 	b.WriteString("\n\n")
 
-	b.WriteString(fmt.Sprintf("# ワークスペース\n\n作業ディレクトリ: %s\n\n", workspace))
+	fmt.Fprintf(&b, "# Workspace\n\nWorking directory: %s\n\n", workspace)
 
 	if prevResult != "" {
-		b.WriteString("# 前のステップの結果\n\n")
+		b.WriteString("# Previous step result\n\n")
 		b.WriteString(prevResult)
 		b.WriteString("\n\n")
 	}
 
 	if feedback != "" {
-		b.WriteString("# フィードバック（前回の試行より）\n\n")
+		b.WriteString("# Feedback (from the previous attempt)\n\n")
 		b.WriteString(feedback)
 		b.WriteString("\n\n")
 	}
 
-	b.WriteString("タスクを完了したら、何を行ったか簡潔に報告してください。")
+	b.WriteString("When the task is complete, briefly report what you did.")
 
 	return b.String()
 }
@@ -256,32 +256,38 @@ func buildStepPrompt(skillContent, stepContent, workspace, prevResult, feedback 
 // validateStep asks the LLM to verify whether the completion criteria in stepContent are met.
 // Returns (true, "") on success, or (false, reason) on failure.
 func validateStep(ctx context.Context, stepContent, workspace, result string, runAgent AgentRunner) (bool, string) {
-	if !strings.Contains(stepContent, "完了条件") &&
-		!strings.Contains(stepContent, "success") &&
+	// stepContent comes from user-authored WORKFLOW.md and may be written in
+	// English or Japanese; trigger validation when it mentions completion
+	// criteria in either language.
+	lc := strings.ToLower(stepContent)
+	if !strings.Contains(lc, "completion criteria") &&
+		!strings.Contains(lc, "success") &&
+		!strings.Contains(lc, "verify") &&
+		!strings.Contains(stepContent, "完了条件") &&
 		!strings.Contains(stepContent, "検証") {
 		// No explicit criteria — treat as successful
 		return true, ""
 	}
 
-	validationPrompt := fmt.Sprintf(`以下のステップの完了条件を確認してください。
+	validationPrompt := fmt.Sprintf(`Check whether the completion criteria for the following step are met.
 
-# ステップの指示（完了条件を含む）
-
-%s
-
-# 実行結果
+# Step instructions (including completion criteria)
 
 %s
 
-# ワークスペース
+# Result
 
 %s
 
-完了条件がすべて満たされているか確認してください。
-- 満たされている場合: "COMPLETE" とだけ回答してください
-- 満たされていない場合: "INCOMPLETE: <満たされていない条件の説明>" と回答してください
+# Workspace
 
-ファイルの存在確認など必要な場合はツールを使って確認してください。`, stepContent, result, workspace)
+%s
+
+Verify that all completion criteria are satisfied.
+- If they are: reply with exactly "COMPLETE"
+- If not: reply "INCOMPLETE: <what is missing>"
+
+Use tools to check when necessary (e.g. confirm a file exists).`, stepContent, result, workspace)
 
 	response, err := runAgent(ctx, validationPrompt)
 	if err != nil {

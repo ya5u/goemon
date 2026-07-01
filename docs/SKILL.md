@@ -76,7 +76,9 @@ goemon skill list                # List installed skills (name — description)
 goemon skill run <name> [input]  # Run a single skill once through the agent
 ```
 
-`skill run` loads the skill's `SKILL.md` instructions and runs them once through the agent (ReAct loop with the built-in tools), without touching conversation history — the CLI equivalent of a single workflow step. The optional `input` is appended to the prompt under an `# 入力` heading. Use it for ad-hoc invocation and for testing a skill while developing it.
+`skill run` loads the skill's `SKILL.md` instructions and runs them once through the agent (ReAct loop with the built-in tools), without touching conversation history — the CLI equivalent of a single workflow step. The optional `input` is appended to the prompt under an `# Input` heading. Use it for ad-hoc invocation and for testing a skill while developing it.
+
+In an interactive `goemon chat` session, the same thing is available as a slash command: `/<skill-name> [input]` (e.g. `/hello-world Yasu`) runs that skill, and `/skills` lists the available names.
 
 ## Creating Skills
 

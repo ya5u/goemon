@@ -24,6 +24,8 @@ External interfaces that connect users to the GoEmon agent. Started by `goemon s
 
 Multiple adapters run simultaneously. All adapters connect to the same Agent instance.
 
+A message of the form `/<skill-name> [input]` (or `/skills` to list) runs that skill directly through the agent, injecting its instructions up front instead of making the model discover the skill. This works both in `goemon chat` and through message adapters like Telegram.
+
 ```json
 {
     "adapters": {
