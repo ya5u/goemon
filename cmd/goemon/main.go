@@ -103,7 +103,7 @@ Commands:
   chat       Start interactive chat session
   run        Run a one-shot command
   serve      Start enabled adapters (Telegram, etc.)
-  skill      Manage skills (list)
+  skill      Manage skills (list, run)
   workflow   Manage workflows (list, run)
   memory     Manage long-term memory (list, show)
   version    Show version
@@ -417,6 +417,7 @@ func runSkill(args []string) error {
 	if len(args) == 0 {
 		fmt.Fprintf(os.Stderr, `Usage:
   goemon skill list
+  goemon skill run <name> [input]
 `)
 		return nil
 	}
@@ -442,10 +443,59 @@ func runSkill(args []string) error {
 			fmt.Printf("  %s — %s\n", s.Name, s.Description)
 		}
 
+	case "run":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: goemon skill run <name> [input]")
+		}
+		return runSkillOnce(mgr, args[1], strings.Join(args[2:], " "))
+
 	default:
 		return fmt.Errorf("unknown skill command: %s", args[0])
 	}
 	return nil
+}
+
+// runSkillOnce loads a skill's instructions and runs them once through the
+// agent (no conversation history). This is the CLI equivalent of a single
+// workflow step, for ad-hoc use and testing skills during development.
+func runSkillOnce(mgr *skill.Manager, name, input string) error {
+	skillInfo, err := mgr.GetSkill(name)
+	if err != nil {
+		return err
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	dataDir, err := config.DataDir()
+	if err != nil {
+		return err
+	}
+
+	store, err := memory.New(filepath.Join(dataDir, "memory.db"))
+	if err != nil {
+		return fmt.Errorf("open memory: %w", err)
+	}
+	defer store.Close()
+
+	ag, router := setupAgent(cfg, store)
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	router.Start(ctx)
+	defer router.Stop()
+
+	prompt := "# タスク\n\n" + skillInfo.Content
+	if input != "" {
+		prompt += "\n\n# 入力\n\n" + input
+	}
+
+	fmt.Printf("Running skill %q...\n", skillInfo.Name)
+	_, err = ag.RunWithoutHistory(ctx, prompt)
+	return err
 }
 
 func runWorkflow(args []string) error {
@@ -575,7 +625,7 @@ func handleSlashCommand(input string, _ *agent.Agent) bool {
 	case "/tools":
 		fmt.Println("Available tools: shell_exec, file_read, file_edit, file_write, web_fetch, memory")
 	case "/skills":
-		fmt.Println("Use: goemon skill list")
+		fmt.Println("Use: goemon skill list | goemon skill run <name> [input]")
 	case "/memory":
 		fmt.Println("Use: goemon memory list | goemon memory show <name>")
 	case "/config":

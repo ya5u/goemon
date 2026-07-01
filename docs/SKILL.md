@@ -72,13 +72,16 @@ Embedded in the binary via `go:embed` (`templates/skills/`) and extracted to `~/
 ## CLI Commands
 
 ```bash
-goemon skill list    # List installed skills (name — description)
+goemon skill list                # List installed skills (name — description)
+goemon skill run <name> [input]  # Run a single skill once through the agent
 ```
+
+`skill run` loads the skill's `SKILL.md` instructions and runs them once through the agent (ReAct loop with the built-in tools), without touching conversation history — the CLI equivalent of a single workflow step. The optional `input` is appended to the prompt under an `# 入力` heading. Use it for ad-hoc invocation and for testing a skill while developing it.
 
 ## Creating Skills
 
 1. Create a directory under `~/.goemon/skills/<name>/`.
 2. Add a `SKILL.md` with `name`/`description` frontmatter and markdown instructions following the format above.
-3. Reference the skill by `<name>` from a workflow step (see [WORKFLOW.md](WORKFLOW.md)).
+3. Test it with `goemon skill run <name> [input]`, and/or reference it by `<name>` from a workflow step (see [WORKFLOW.md](WORKFLOW.md)).
 
 The skill is picked up immediately — no restart needed. To ship a skill with GoEmon, add its directory under `templates/skills/`; it will be embedded in the binary and extracted on `goemon init`.

@@ -66,7 +66,7 @@ Anthropic-style instruction packages. Each skill is a directory containing a sin
 - Skills are **not** registered as LLM tools; they are loaded on demand (`Manager.GetSkill`) and injected into the agent prompt
 - Their main consumer is workflows: a workflow step references a skill by name, and the skill's instructions become the basis of that step's prompt
 - Discovered by scanning `~/.goemon/skills/`, so adding or removing a skill directory takes effect without restart
-- `goemon skill list` shows installed skills
+- `goemon skill list` shows installed skills; `goemon skill run <name> [input]` runs one once through the agent (ad-hoc / for testing) — the CLI equivalent of a single workflow step
 
 See [SKILL.md](SKILL.md) for the full specification.
 
@@ -175,6 +175,7 @@ All user data lives in `~/.goemon/`:
 | `goemon workflow list` | List installed workflows                             |
 | `goemon workflow run`  | Run a workflow manually                              |
 | `goemon skill list`    | List installed skills                                |
+| `goemon skill run`     | Run a single skill once (ad-hoc / testing)           |
 | `goemon memory list`   | List long-term memories                              |
 | `goemon memory show`   | Show one memory's full content                       |
 | `goemon version`       | Show version                                         |

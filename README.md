@@ -52,6 +52,7 @@ goemon serve                     # Start adapters + workflow scheduler
 goemon version                   # Show version
 
 goemon skill list                # List installed skills
+goemon skill run <name> [input]  # Run a single skill once (ad-hoc / testing)
 
 goemon workflow list             # List workflows
 goemon workflow run <name>       # Run a workflow manually
