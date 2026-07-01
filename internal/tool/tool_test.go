@@ -8,8 +8,45 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ya5u/goemon/internal/memory"
 	"github.com/ya5u/goemon/internal/usermemory"
 )
+
+func TestHistoryTool(t *testing.T) {
+	store, err := memory.New(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	if err := store.SaveMessage("user", "check disk usage"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveMessage("assistant", "disk is at 18%"); err != nil {
+		t.Fatal(err)
+	}
+
+	h := NewHistory(store)
+
+	result, err := h.Execute(context.Background(), json.RawMessage(`{"limit":10}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "check disk usage") || !strings.Contains(result, "disk is at 18%") {
+		t.Errorf("history missing messages: %s", result)
+	}
+
+	// Empty store on a fresh path.
+	empty, _ := memory.New(filepath.Join(t.TempDir(), "empty.db"))
+	defer empty.Close()
+	result, err = NewHistory(empty).Execute(context.Background(), json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "No conversation history") {
+		t.Errorf("expected empty message, got: %s", result)
+	}
+}
 
 func TestRegistry(t *testing.T) {
 	r := NewRegistry()

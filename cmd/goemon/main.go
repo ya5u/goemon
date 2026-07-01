@@ -217,6 +217,7 @@ func setupAgent(cfg *config.Config, store *memory.Store) (*agent.Agent, *agent.R
 	registry.Register(&tool.FileEdit{})
 	registry.Register(&tool.FileWrite{})
 	registry.Register(tool.NewWebFetch())
+	registry.Register(tool.NewHistory(store))
 	if dataDir, err := config.DataDir(); err == nil {
 		registry.Register(tool.NewMemory(usermemory.NewManager(filepath.Join(dataDir, "memory"))))
 	}
@@ -691,7 +692,7 @@ func handleSlashCommand(ctx context.Context, input string, ag *agent.Agent, skil
 		fmt.Println("Goodbye!")
 		return false
 	case "/tools":
-		fmt.Println("Available tools: shell_exec, file_read, file_edit, file_write, web_fetch, memory")
+		fmt.Println("Available tools: shell_exec, file_read, file_edit, file_write, web_fetch, conversation_history, memory")
 	case "/skills":
 		skills, err := skillMgr.ListSkills()
 		if err != nil {

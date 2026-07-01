@@ -85,6 +85,7 @@ The same `/skills` and `/<skill-name> [input]` messages also work through adapte
 | `file_edit`    | Replace a string in a file         |
 | `file_write`   | Write content to file              |
 | `web_fetch`    | HTTP GET with HTML tag stripping   |
+| `conversation_history` | Read recent conversation history (for reflection) |
 | `memory`       | Save/read/list/delete long-term memories about the user (see [Memory](#memory)) |
 
 ## Skills

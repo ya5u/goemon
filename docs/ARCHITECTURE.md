@@ -58,6 +58,7 @@ Built-in capabilities compiled into the GoEmon binary.
 | `file_edit`  | Replace a string in a file               |
 | `file_write` | Write content to file                    |
 | `web_fetch`  | HTTP GET with script/style/tag stripping |
+| `conversation_history` | Read recent conversation history from SQLite (read-only; used for memory reflection) |
 | `memory`     | Save/read/list/delete long-term memories (file-based; see below) |
 
 ### Skills
@@ -131,7 +132,7 @@ Flow:
 2. **Read** — when an index entry is relevant, the agent calls the `memory` tool (`read`) to load that memory's full body.
 3. **Write** — the agent calls the `memory` tool (`save`) when it learns something durable (a preference, feedback, a recurring task, a request pattern), and `delete` to drop obsolete facts. Writes regenerate `MEMORY.md`.
 
-This is tool-driven: the model decides what is worth remembering, guided by the protocol in the system prompt. (A future batch "reflection" pass over `conversations` could supplement it.)
+This is tool-driven: the model decides what is worth remembering, guided by the protocol in the system prompt. In addition, a scheduled **reflection workflow** (the `distilling-memories` skill, read via the `conversation_history` tool) can periodically review recent conversation history and update memory in batch — the CLI/adapter tool path and the workflow path both write to the same `~/.goemon/memory/` files.
 
 ## Data
 
